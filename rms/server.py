@@ -1,5 +1,6 @@
 import json
 import mimetypes
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -17,10 +18,9 @@ def _int(q, key, required=False):
         if required:
             raise _Bad(f"missing {key}")
         return None
-    try:
-        return int(v)
-    except ValueError:
+    if not re.fullmatch(r"-?[0-9]+", v) or abs(int(v)) >= 2 ** 62:
         raise _Bad(f"{key} must be an integer")
+    return int(v)
 
 
 def make_server(store, port, meta, web_dir):
@@ -81,20 +81,25 @@ def make_server(store, port, meta, web_dir):
                 return self._json(200, {"step": step, "points": store.query_system(frm, to, step)})
             if path == "/api/apps":
                 frm, to, step = self._range(q)
-                t = q.get("top", ["15"])[-1]
-                if t == "all":
+                if q.get("top", [None])[-1] == "all":
                     top = None
                 else:
                     top = _int(q, "top")
-                    if top <= 0:
+                    if top is None:
+                        top = 15
+                    elif top <= 0:
                         raise _Bad("top must be > 0")
                 return self._json(200, {"step": step, "apps": store.query_apps(frm, to, step, top)})
             self._json(404, {"error": "not found"})
 
         def _static(self, path):
             rel = unquote(path).lstrip("/") or "index.html"
-            f = (web / rel).resolve()
-            if not f.is_relative_to(web) or not f.is_file():
+            try:
+                f = (web / rel).resolve()
+                ok = f.is_relative_to(web) and f.is_file()
+            except ValueError:  # embedded NUL etc.
+                ok = False
+            if not ok:
                 return self._send(404, b"not found", "text/plain")
             ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
             self._send(200, f.read_bytes(), ctype)

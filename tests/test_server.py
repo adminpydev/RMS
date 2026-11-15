@@ -76,7 +76,9 @@ def test_step_clamped_to_interval_multiple(env):
 @pytest.mark.parametrize("q", [
     "/api/system?from=abc&to=10", "/api/system?from=100&to=0", "/api/system?from=5",
     "/api/system?from=0&to=10&step=0", "/api/apps?from=0&to=10&top=0",
-    "/api/apps?from=0&to=10&top=x", "/api/system?from=0&to=10&step=1.5",
+    "/api/apps?from=0&to=10&top=x", "/api/system?from=0&to=1_000", "/api/system?from=0&to=%2B5",
+    "/api/system?from=0&to=%205", "/api/system?from=0&to=10&step=99999999999999999999",
+    "/api/system?from=-99999999999999999999&to=10", "/api/system?from=0&to=10&step=1.5",
 ])
 def test_bad_params_400(env, q):
     r, body = get(env[0], q)
@@ -95,3 +97,16 @@ def test_static_and_traversal(env):
 
 def test_no_cors_header(env):
     assert get(env[0], "/api/meta")[0].getheader("Access-Control-Allow-Origin") is None
+
+
+def test_apps_default_top(env):
+    srv, store = env
+    store.write_system(10, 1000, 500, 500, None, None, 0, None)
+    store.write_apps(10, [(f"a{i}", 100 + i, 1) for i in range(20)] + [("Other (small apps)", 5, 1)])
+    r, body = get(srv, "/api/apps?from=0&to=100")
+    assert r.status == 200
+    assert len(json.loads(body)["apps"]) == 16
+
+
+def test_static_nul_404(env):
+    assert get(env[0], "/a%00b")[0].status == 404

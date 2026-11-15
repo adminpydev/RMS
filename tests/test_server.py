@@ -15,6 +15,7 @@ def env(tmp_path):
     web = tmp_path / "web"
     web.mkdir()
     (web / "index.html").write_text("<html>hi</html>")
+    (web / "app.js").write_text("1")
     store = Store(str(tmp_path / "rms.db"))
     srv = make_server(store, 0, META, web)
     t = threading.Thread(target=srv.serve_forever)
@@ -110,3 +111,13 @@ def test_apps_default_top(env):
 
 def test_static_nul_404(env):
     assert get(env[0], "/a%00b")[0].status == 404
+
+
+
+def test_static_js_content_type(env):
+    r, _ = get(env[0], "/app.js")
+    assert r.getheader("Content-Type").startswith("text/javascript")
+
+
+def test_huge_int_is_400(env):
+    assert get(env[0], f"/api/system?from={'9' * 5000}&to=1")[0].status == 400

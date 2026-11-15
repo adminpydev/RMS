@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rms-monitor"
+version = "0.1.0"
+description = "Local RAM monitor: collector, SQLite, localhost dashboard"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+dependencies = ["psutil"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+rms = "rms.cli:main"
+
+[tool.setuptools]
+packages = ["rms"]
+
+[tool.setuptools.package-data]
+rms = ["web/**/*"]

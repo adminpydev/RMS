@@ -42,7 +42,7 @@
     <section class="panel" aria-labelledby="h-sys">
       <div class="panel-head">
         <h2 id="h-sys">System timeline</h2>
-        <span class="info" tabindex="0" title="App memory uses RSS, which counts shared memory more than once.">About Apps</span>
+        <span class="info-wrap"><span class="info" tabindex="0" aria-describedby="rss-tip">About Apps</span><span id="rss-tip" class="tip" role="tooltip">App memory uses RSS, which counts shared memory more than once.</span></span>
       </div>
       <div id="sys-chart" class="chart" role="figure" aria-label="Stacked memory use over the selected range: apps, other system memory and available memory, with cached, compressed and swap lines"></div>
       <div id="pressure-wrap" hidden>

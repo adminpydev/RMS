@@ -11,10 +11,13 @@ const TOP_N = 15;
 const MAX_SPIKES = 12; // ponytail: caps per-spike apps fetches; paginate if ranges get busier
 const RSS_NOTE = "App memory uses RSS, which counts shared memory more than once.";
 const LOST = "Lost connection to RMS. Retrying…";
+const BROKEN = "Something went wrong rendering this view.";
 const OS = { darwin: "macOS", linux: "Linux", win32: "Windows" };
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 let src, meta, view = null, timer = null, gen = 0, selectedApp = null;
+let hist = null, histAt = 0; // daily-pattern history, refetched at most hourly
+const HIST_TTL = 3600;
 let range = { preset: "24h" }; // or { from, to } for custom / zoomed ranges
 const charts = new Map(); // container element -> uPlot
 
@@ -54,11 +57,14 @@ function setStatus(msg, error = false) {
   el.classList.toggle("error", error);
 }
 
+// Tag data-source failures so only they get the connection message.
+const net = (p) => p.catch((e) => { e.net = true; throw e; });
+
 async function refresh() {
   clearTimeout(timer);
   const my = ++gen;
   try {
-    meta = await src.meta();
+    meta = await net(src.meta());
     renderHeader();
     if (meta.first_ts == null) {
       if (my !== gen) return;
@@ -70,15 +76,19 @@ async function refresh() {
       return schedule(true);
     }
     const [from, to] = span();
-    const sys = await src.system(from, to);
-    const [apps, hist] = await Promise.all([
-      src.apps(from, to, { step: sys.step, top: "all" }),
-      src.system(meta.first_ts, end()), // daily pattern uses all history, not just the range
+    const now = Date.now() / 1000;
+    const stale = !hist || now - histAt > HIST_TTL;
+    const sys = await net(src.system(from, to));
+    const [apps, h] = await Promise.all([
+      net(src.apps(from, to, { step: sys.step, top: "all" })),
+      // daily pattern uses all history, not just the range
+      stale ? net(src.system(meta.first_ts, end())) : hist,
     ]);
+    if (stale) { hist = h; histAt = now; }
     const spikes = detectSpikes(sys.points, meta.total_ram, sys.step).slice(-MAX_SPIKES);
     const causes = await Promise.all(spikes.map(async (s) => {
       const w = spikeWindow(s);
-      const a = await src.apps(w.from, w.to, { step: meta.interval, top: "all" });
+      const a = await net(src.apps(w.from, w.to, { step: meta.interval, top: "all" }));
       return explainSpike(a.apps, s).slice(0, 5);
     }));
     if (my !== gen) return;
@@ -90,7 +100,7 @@ async function refresh() {
   } catch (e) {
     if (my !== gen) return;
     console.error(e);
-    setStatus(isLive() ? LOST : `Could not load data: ${e.message}`, true);
+    setStatus(!e.net ? BROKEN : isLive() ? LOST : `Could not load data: ${e.message}`, true);
     schedule(true);
   }
 }
@@ -98,6 +108,8 @@ async function refresh() {
 // ---------- charts ----------
 
 function zoomFromSelect(u) {
+  // Synced charts mirror the selection; only the chart the user dragged on zooms.
+  if (!u.cursor.event) return;
   const { left, width } = u.select;
   if (width < 2) return;
   const from = Math.floor(u.posToVal(left, "x")), to = Math.ceil(u.posToVal(left + width, "x"));
@@ -246,12 +258,14 @@ function spark(values) {
 function renderApps(v) {
   const rows = topApps(v.apps).slice(0, TOP_N);
   if (selectedApp && !v.apps[selectedApp]) selectedApp = null;
+  const focused = document.activeElement?.closest?.("#apps-body tr")?.dataset.app; // survive the poll rebuild
   $("#apps-body").innerHTML = rows.length
-    ? rows.map((r) => `<tr tabindex="0" data-app="${esc(r.name)}" aria-current="${r.name === selectedApp}">
+    ? rows.map((r) => `<tr tabindex="0" data-app="${esc(r.name)}" aria-controls="app-detail" aria-expanded="${r.name === selectedApp}">
         <th scope="row" title="${esc(r.name)}">${esc(r.name)}</th>
         <td class="num">${fmtBytes(r.avg)}</td><td class="num">${fmtBytes(r.peak)}</td>
         <td class="num procs">${r.procs}</td><td>${spark(r.spark)}</td></tr>`).join("")
     : `<tr><td colspan="5" class="empty">No app data in this range.</td></tr>`;
+  if (focused) document.querySelector(`#apps-body tr[data-app="${CSS.escape(focused)}"]`)?.focus();
   renderAppDetail(v);
 }
 
@@ -268,7 +282,6 @@ function selectRow(tr) {
   if (!tr?.dataset.app) return;
   selectedApp = selectedApp === tr.dataset.app ? null : tr.dataset.app;
   renderApps(view);
-  document.querySelector(`#apps-body tr[data-app="${CSS.escape(tr.dataset.app)}"]`)?.focus();
 }
 
 function renderLeaks(v) {

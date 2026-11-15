@@ -22,6 +22,7 @@
   --swap: #c53030;
 
   --p-ok: #2f9e5b;
+  --live: #1a7f43; /* 4.7:1 on --bg */
   --p-warn: #d69e2e;
   --p-crit: #d64545;
 
@@ -50,6 +51,7 @@
     --swap: #f07171;
 
     --p-ok: #3fb672;
+    --live: #3fb672; /* 7.3:1 on --bg */
     --p-warn: #e3b341;
     --p-crit: #f06060;
 
@@ -78,12 +80,13 @@ h1 { margin: 0; font-size: 22px; letter-spacing: .08em; font-weight: 700; }
   font: 600 11px/1 var(--sans); text-transform: uppercase; letter-spacing: .08em;
   padding: 4px 7px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted);
 }
-.badge.live { color: var(--p-ok); border-color: currentColor; }
+.badge.live { color: var(--live); border-color: currentColor; }
 .host { margin: 0; color: var(--muted); font: 13px var(--mono); }
 
 .banner {
   margin: 16px 0 0; padding: 10px 14px; border-radius: 6px;
-  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
 }
 
 .range { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; margin: 18px 0 8px; }
@@ -115,7 +118,14 @@ main { display: grid; gap: 16px; }
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 h2 { margin: 0; font-size: 15px; font-weight: 600; }
 h3 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.info-wrap { position: relative; }
 .info { font-size: 12px; color: var(--muted); border-bottom: 1px dotted currentColor; cursor: help; }
+.tip {
+  display: none; position: absolute; right: 0; top: 1.8em; z-index: 2;
+  width: max-content; max-width: min(260px, 80vw); padding: 8px 10px; border-radius: 6px;
+  background: var(--text); color: var(--surface); font-size: 12px; line-height: 1.4;
+}
+.info:hover + .tip, .info:focus + .tip { display: block; }
 .hint, .key { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
 .empty { margin: 4px 0; color: var(--muted); font-size: 14px; }
 
@@ -138,7 +148,7 @@ table.apps { width: 100%; border-collapse: collapse; font-size: 14px; }
 .apps tbody th { font-weight: 500; max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
 .apps tbody tr { cursor: pointer; }
 .apps tbody tr:hover { background: var(--bg); }
-.apps tbody tr[aria-current="true"] { background: var(--bg); box-shadow: inset 3px 0 var(--accent); }
+.apps tbody tr[aria-expanded="true"] { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .apps tbody tr:focus-visible { outline-offset: -2px; }
 .spark { display: block; width: 96px; height: 22px; }
 .spark path { fill: none; stroke: var(--apps); stroke-width: 1.25; vector-effect: non-scaling-stroke; }

@@ -46,6 +46,10 @@ def test_sample_apps_skips_errors():
     assert sample_apps(procs, "darwin") == {"Google Chrome": (7, 1)}
 
 
+def test_sample_apps_skips_nameless():
+    assert sample_apps([proc(5, name=None, exe=None)], "darwin") == {}
+
+
 def test_tracker_hysteresis():
     t = Tracker(top=1, threshold=1000, hold=3600)
     assert t.select(0, {"A": (2000, 1)}) == [("A", 2000, 1)]

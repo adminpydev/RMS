@@ -34,6 +34,8 @@ def sample_apps(procs, platform):
             if mem is None:
                 continue
             app = app_name(info["name"], info["exe"], platform)
+            if not app:
+                continue
         except _SKIP:
             continue
         rss, n = out.get(app, (0, 0))

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<title>RMS · RAM monitor</title>
+<link rel="stylesheet" href="vendor/uPlot.min.css">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>RMS</h1>
+      <span id="mode" class="badge" hidden></span>
+    </div>
+    <p id="host" class="host"></p>
+  </header>
+
+  <p id="banner" class="banner" hidden>Sample data. <a href="https://github.com/adminpydev/RMS#install">Install RMS</a> to see your own machine.</p>
+
+  <nav class="range" aria-label="Time range">
+    <div class="presets" role="group" aria-label="Preset ranges">
+      <button type="button" data-range="1h">1h</button>
+      <button type="button" data-range="6h">6h</button>
+      <button type="button" data-range="24h">24h</button>
+      <button type="button" data-range="7d">7d</button>
+    </div>
+    <div class="custom">
+      <label>From <input type="datetime-local" id="from"></label>
+      <label>To <input type="datetime-local" id="to"></label>
+    </div>
+  </nav>
+
+  <p id="status" class="status" role="status">Loading…</p>
+  <p id="collecting" class="collecting" hidden></p>
+
+  <main id="main" hidden>
+    <section class="panel" aria-labelledby="h-sys">
+      <div class="panel-head">
+        <h2 id="h-sys">System timeline</h2>
+        <span class="info" tabindex="0" title="App memory uses RSS, which counts shared memory more than once.">About Apps</span>
+      </div>
+      <div id="sys-chart" class="chart" role="figure" aria-label="Stacked memory use over the selected range: apps, other system memory and available memory, with cached, compressed and swap lines"></div>
+      <div id="pressure-wrap" hidden>
+        <div id="pressure" class="pressure" role="img" aria-label="Memory pressure over the selected range"></div>
+        <p class="key">Memory pressure: <i class="sw ok"></i>normal <i class="sw warn"></i>warning <i class="sw crit"></i>critical</p>
+      </div>
+      <p class="hint">Drag across any chart to zoom.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="h-apps">
+      <div class="panel-head"><h2 id="h-apps">Top apps</h2></div>
+      <div class="table-wrap">
+        <table class="apps">
+          <thead><tr><th scope="col">App</th><th scope="col" class="num">Avg</th><th scope="col" class="num">Peak</th><th scope="col" class="num procs">Procs</th><th scope="col">Trend</th></tr></thead>
+          <tbody id="apps-body"></tbody>
+        </table>
+      </div>
+      <div id="app-detail" class="detail" hidden>
+        <h3 id="app-title"></h3>
+        <div id="app-chart" class="chart" role="figure"></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-leaks">
+      <div class="panel-head"><h2 id="h-leaks">Leaks</h2></div>
+      <div id="leaks" class="cards"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-spikes">
+      <div class="panel-head"><h2 id="h-spikes">Spikes</h2></div>
+      <div id="spikes" class="cards"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-pattern">
+      <div class="panel-head"><h2 id="h-pattern">Daily pattern</h2></div>
+      <div id="heat"></div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

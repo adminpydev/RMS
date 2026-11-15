@@ -1,6 +1,8 @@
 import json
 import socket
 
+import pytest
+
 from rms.cli import main
 from rms.store import Store
 
@@ -55,3 +57,10 @@ def test_export_bad_iso(tmp_path, capsys):
         main(["export", "--db", str(tmp_path / "r.db"), "--from", "nope"])
     assert e.value.code == 2
     assert "invalid ISO" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag,val", [("--interval", "0"), ("--retention-days", "0"), ("--port", "-1"), ("--port", "70000")])
+def test_run_rejects_bad_numbers(flag, val, tmp_path):
+    with pytest.raises(SystemExit) as e:
+        main(["run", flag, val, "--no-browser", "--db", str(tmp_path / "r.db")])
+    assert e.value.code == 2

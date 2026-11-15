@@ -94,15 +94,29 @@ def _status(a):
     return 0
 
 
+def positive_int(s):
+    n = int(s)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return n
+
+
+def port_int(s):
+    n = positive_int(s)
+    if n > 65535:
+        raise argparse.ArgumentTypeError("must be <= 65535")
+    return n
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="rms")
     sub = p.add_subparsers(dest="cmd", required=True)
     db = argparse.ArgumentParser(add_help=False)
     db.add_argument("--db", default=DEFAULT_DB)
     r = sub.add_parser("run", parents=[db])
-    r.add_argument("--interval", type=int, default=10)
-    r.add_argument("--port", type=int, default=8765)
-    r.add_argument("--retention-days", type=int, default=14)
+    r.add_argument("--interval", type=positive_int, default=10)
+    r.add_argument("--port", type=port_int, default=8765)
+    r.add_argument("--retention-days", type=positive_int, default=14)
     r.add_argument("--no-browser", action="store_true")
     r.set_defaults(fn=_run)
     e = sub.add_parser("export", parents=[db])

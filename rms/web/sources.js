@@ -141,7 +141,10 @@ export async function loadSource() {
   try {
     const r = await fetch("/api/meta", { signal: AbortSignal.timeout(1500) });
     if (r.ok && (await r.json()).mode === "live") return new LiveSource();
-  } catch { /* no local server: fall through to demo */ }
+  } catch { /* no server answered */ }
+  if (typeof location !== "undefined" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
+    throw Object.assign(new Error("RMS server not responding"), { local: true });
+  }
   const r = await fetch("./sample.json");
   if (!r.ok) throw new Error(`sample.json: HTTP ${r.status}`);
   return new DemoSource(await r.json());

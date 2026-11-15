@@ -40,7 +40,10 @@ const isLive = () => src instanceof LiveSource;
 // Demo data ends at/before now (whole-day anchoring), so demo ranges end at the data's end.
 const end = () => (isLive() ? Math.floor(Date.now() / 1000) + 1 : meta.last_ts + meta.interval);
 function span() {
-  if (range.preset) { const e = end(); return [e - PRESETS[range.preset], e]; }
+  if (range.preset) {
+    const e = end(), f = e - PRESETS[range.preset];
+    return [meta.first_ts ? Math.max(f, meta.first_ts - meta.interval) : f, e]; // short history -> fine step
+  }
   return [range.from, range.to];
 }
 
@@ -78,6 +81,7 @@ async function refresh() {
     const [from, to] = span();
     const now = Date.now() / 1000;
     const stale = !hist || now - histAt > HIST_TTL;
+    // ponytail: top=all apps query costs ~0.5 s CPU per poll on a 7d range; skip polling when step >= 600 s, or add rollups
     const sys = await net(src.system(from, to));
     const [apps, h] = await Promise.all([
       net(src.apps(from, to, { step: sys.step, top: "all" })),
@@ -303,7 +307,7 @@ function renderSpikes(v) {
   if (!v.spikes.length) return empty(box, "No spikes in this range.");
   box.innerHTML = [...v.spikes].reverse().map((s) => `<article class="card">
       <h3>${fmtTime(s.peakTs)}</h3>
-      <div class="stat">${plus(s.rise)}</div>
+      <div class="stat">${s.reason === "pressure" && s.rise <= 0 ? "Memory pressure" : plus(s.rise)}</div>
       <p class="meta">${s.reason === "pressure" ? "Memory pressure left normal" : "Used memory rose fast"}</p>
       ${s.causes.length
         ? `<ol aria-label="Top causes">${s.causes.map((c) => `<li><span>${esc(c.name)}</span><span class="num">${plus(c.growth)}</span></li>`).join("")}</ol>`
@@ -362,14 +366,17 @@ function bind() {
   });
 }
 
+let bound = false;
 async function init() {
-  bind();
+  if (!bound) { bind(); bound = true; }
   try {
     src = await loadSource();
   } catch (e) {
     console.error(e);
+    if (e.local) { setStatus("RMS server not responding. Retrying…", true); return void setTimeout(init, 3000); }
     return setStatus(`Could not load data: ${e.message}`, true);
   }
+  setStatus(null);
   refresh();
 }
 

@@ -80,3 +80,9 @@ def test_export_columnar_aligned(tmp_path):
     assert all(len(v) == n for v in d["system"].values())
     assert d["apps"]["A"]["rss"] == [1, None, 3]
     assert d["apps"]["A"]["procs"] == [1, None, 2]
+
+
+def test_close_idempotent(tmp_path):
+    s = mk(tmp_path)
+    s.close()
+    s.close()

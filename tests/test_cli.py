@@ -31,3 +31,27 @@ def test_export_stdout_format(tmp_path, capsys):
 def test_status_empty(tmp_path, capsys):
     assert main(["status", "--db", str(tmp_path / "r.db")]) == 0
     assert "0 rows" in capsys.readouterr().out
+
+
+def test_run_other_oserror_and_store_closed(tmp_path, capsys, monkeypatch):
+    import errno
+    import rms.cli as cli
+    closed = []
+    orig = Store.close
+    monkeypatch.setattr(Store, "close", lambda self: (closed.append(1), orig(self)))
+
+    def boom(*a):
+        raise OSError(errno.EACCES, "denied")
+    monkeypatch.setattr(cli, "make_server", boom)
+    assert main(["run", "--no-browser", "--db", str(tmp_path / "r.db")]) == 2
+    err = capsys.readouterr().err
+    assert "Cannot start server" in err and "in use" not in err
+    assert closed
+
+
+def test_export_bad_iso(tmp_path, capsys):
+    import pytest
+    with pytest.raises(SystemExit) as e:
+        main(["export", "--db", str(tmp_path / "r.db"), "--from", "nope"])
+    assert e.value.code == 2
+    assert "invalid ISO" in capsys.readouterr().err

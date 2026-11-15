@@ -1,4 +1,5 @@
 import argparse
+import errno
 import json
 import os
 import socket
@@ -18,8 +19,11 @@ from rms.store import Store
 DEFAULT_DB = "~/.rms/rms.db"
 
 
-def _ts(x):
-    return None if x is None else int(datetime.fromisoformat(x).timestamp())
+def _iso(x):
+    try:
+        return int(datetime.fromisoformat(x).timestamp())
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid ISO datetime: {x!r}")
 
 
 def _local(ts):
@@ -36,12 +40,17 @@ def _run(a):
     store = Store(os.path.expanduser(a.db))
     try:
         server = make_server(store, a.port, _meta(a.interval), Path(__file__).parent / "web")
-    except OSError:
-        print(f"Port {a.port} is in use. Try: rms run --port {a.port + 1}", file=sys.stderr)
+    except OSError as e:
+        store.close()
+        if e.errno == errno.EADDRINUSE:
+            print(f"Port {a.port} is in use. Try: rms run --port {a.port + 1}", file=sys.stderr)
+        else:
+            print(f"Cannot start server: {e}", file=sys.stderr)
         return 2
     stop = threading.Event()
-    threading.Thread(target=Collector(store, a.interval, a.retention_days).run,
-                     args=(stop,), daemon=True).start()
+    t = threading.Thread(target=Collector(store, a.interval, a.retention_days).run,
+                         args=(stop,), daemon=True)
+    t.start()
     url = f"http://127.0.0.1:{a.port}"
     print(f"RMS running at {url}  (Ctrl+C to stop)")
     if not a.no_browser:
@@ -52,13 +61,18 @@ def _run(a):
         pass
     finally:
         stop.set()
+        t.join(timeout=a.interval + 2)
         server.server_close()
+        store.close()
     return 0
 
 
 def _export(a):
     store = Store(os.path.expanduser(a.db))
-    d = store.export(_ts(a.frm), _ts(a.to))
+    try:
+        d = store.export(a.frm, a.to)
+    finally:
+        store.close()
     d["meta"].update(_meta(10))  # ponytail: interval not stored in db; default assumed
     text = json.dumps(d)
     if a.output:
@@ -69,7 +83,11 @@ def _export(a):
 
 
 def _status(a):
-    s = Store(os.path.expanduser(a.db)).stats()
+    store = Store(os.path.expanduser(a.db))
+    try:
+        s = store.stats()
+    finally:
+        store.close()
     print(f"db: {s['path']}\nsize: {s['size_bytes'] / 2**20:.2f} MB\n"
           f"system: {s['system_rows']} rows\napps: {s['app_rows']} rows\n"
           f"range: {_local(s['first_ts'])} .. {_local(s['last_ts'])}")
@@ -88,8 +106,8 @@ def main(argv=None):
     r.add_argument("--no-browser", action="store_true")
     r.set_defaults(fn=_run)
     e = sub.add_parser("export", parents=[db])
-    e.add_argument("--from", dest="frm")
-    e.add_argument("--to")
+    e.add_argument("--from", dest="frm", type=_iso)
+    e.add_argument("--to", type=_iso)
     e.add_argument("-o", "--output")
     e.set_defaults(fn=_export)
     sub.add_parser("status", parents=[db]).set_defaults(fn=_status)

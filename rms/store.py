@@ -36,6 +36,10 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
 
+    def close(self):
+        with self._lock:
+            self._db.close()  # sqlite3 close is idempotent
+
     def _q(self, sql, args=()):
         with self._lock:
             return self._db.execute(sql, args).fetchall()

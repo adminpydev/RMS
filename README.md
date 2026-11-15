@@ -36,6 +36,7 @@ Data lives in `~/.rms/rms.db` and is kept for 14 days by default.
 
 - Runs only on your machine. The server binds to `127.0.0.1` and rejects other Host headers.
 - No telemetry, no accounts. The dashboard makes no requests except to its own origin.
+- The dashboard only answers on `127.0.0.1`/`localhost` at the same port. Over SSH, forward the same local port: `ssh -L 8765:127.0.0.1:8765 host`.
 - Open source, Apache-2.0.
 
 The demo site shows sample data from a demo machine, not your computer. Browsers cannot read system RAM.

@@ -3,10 +3,11 @@ name: pages
 on:
   push:
     branches: [master]
+  pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: pages
@@ -29,8 +30,10 @@ jobs:
 
   deploy:
     needs: test
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Assemble site
@@ -40,6 +43,7 @@ jobs:
           mkdir _site/demo
           cp -r rms/web/* _site/demo/
           cp site/sample.json _site/demo/sample.json
+          rm -f _site/sample.json
           touch _site/.nojekyll
       - name: Push to gh-pages
         working-directory: _site

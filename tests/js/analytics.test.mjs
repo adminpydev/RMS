@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DemoSource } from "../../rms/web/sources.js";
-import { MB, stackLayers, topApps, detectLeaks, detectSpikes, explainSpike, heatmap }
+import { MB, stackLayers, topApps, detectLeaks, detectSpikes, explainSpike, spikeWindow, heatmap }
   from "../../rms/web/analytics.js";
 
 const sample = JSON.parse(readFileSync(new URL("../../site/sample.json", import.meta.url)));
@@ -32,8 +32,9 @@ test("detectSpikes finds the two planted spikes", () => {
 test("explainSpike names planted causes", async () => {
   const want = ["Docker", "Google Chrome"];
   for (const [i, s] of spikes.entries()) {
-    const r = await src.apps(s.peakTs - 600, s.peakTs + sys.step, { step: meta.interval, top: "all" });
-    const ex = explainSpike(r.apps, s.peakTs + sys.step);
+    const { from, to } = spikeWindow(s);
+    const r = await src.apps(from, to, { step: meta.interval, top: "all" });
+    const ex = explainSpike(r.apps, s.peakEnd);
     assert.equal(ex[0].name, want[i], JSON.stringify(ex.slice(0, 3)));
     assert.ok(ex.every((e) => e.growth > 0 && e.name !== "Other (small apps)"));
   }
@@ -81,4 +82,35 @@ test("heatmap null under 2 days", () => {
     return v.reduce((a, b) => a + b, 0) / v.length;
   };
   assert.ok(mean([13, 14, 15]) > mean([2, 3, 4]));
+});
+
+test("detectSpikes base is the min when pressure opens the span", () => {
+  const p = (ts, v, pressure = 1) => ({ ts, used: v, used_max: v, available: 1000 - v, pressure });
+  const sp = detectSpikes([p(0, 500, 2), p(300, 100), p(600, 900)], 1000, 300);
+  assert.equal(sp.length, 1);
+  assert.equal(sp[0].rise, 800);
+  assert.equal(sp[0].peakTs, 600);
+  assert.equal(sp[0].peakEnd, 900);
+});
+
+test("stackLayers sums to total with linux-style available", () => {
+  const L = stackLayers([{ ts: 0, used: 600, available: 300 }], { A: [{ ts: 0, rss: 400 }] }, 1000);
+  assert.equal(L.apps[0] + L.otherSystem[0] + L.available[0], 1000);
+  assert.equal(L.available[0], 400);
+});
+
+test("detectLeaks sees a leak in the final partial stride", () => {
+  // step 5 min, 47 buckets; app opens at bucket 23 and grows 300 MiB/h to the end.
+  // Strided 2h windows end at bucket 42 (presence < 80%); only the final window passes.
+  const s = Array.from({ length: 47 }, (_, i) => ({
+    ts: i * 300, rss: i < 23 ? 0 : 500 * MB + (i - 23) * 25 * MB, rss_max: 0, procs: 1 }));
+  const L = detectLeaks({ X: s }, 300);
+  assert.deepEqual(L.map((l) => l.name), ["X"]);
+  assert.equal(L[0].endTs, 46 * 300);
+});
+
+test("heatmap accepts exactly 2 days of buckets", () => {
+  const pts = (n) => Array.from({ length: n }, (_, i) => ({ ts: FROM + i * 3600, used: 1 }));
+  assert.notEqual(heatmap(pts(48)), null);
+  assert.equal(heatmap(pts(47)), null);
 });

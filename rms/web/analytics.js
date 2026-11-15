@@ -14,8 +14,9 @@ export const EXPLAIN_WINDOW = 300;
 const LEAK_WINDOWS = [LEAK_MIN_SPAN, 6 * 3600, 24 * 3600];
 const PRESSURE_NORMAL = 1; // macOS kern.memorystatus_vm_pressure_level
 
-// Stacked layers that always sum to totalRam. RSS double-counts shared memory, so Apps
-// is clamped at `used`.
+// Stacked layers that always sum to totalRam on every platform. RSS double-counts shared
+// memory, so Apps is clamped at `used`. Available is shown as total - used (Linux reports
+// an `available` that does not add up), never the raw field.
 export function stackLayers(points, apps, totalRam) {
   const series = Object.values(apps);
   const out = { ts: [], apps: [], otherSystem: [], available: [] };
@@ -28,7 +29,7 @@ export function stackLayers(points, apps, totalRam) {
     const a = Math.min(series.reduce((s, x) => s + (x[i]?.rss ?? 0), 0), p.used);
     out.apps.push(a);
     out.otherSystem.push(Math.max(0, p.used - a));
-    out.available.push(p.available ?? totalRam - p.used);
+    out.available.push(Math.max(0, totalRam - p.used));
   });
   return out;
 }
@@ -77,7 +78,11 @@ export function detectLeaks(apps, step) {
       if (L > range) continue;
       const k = Math.ceil(L / step);
       const stride = Math.max(1, Math.floor(L / 4 / step));
-      for (let i = 0; i + k <= s.length; i += stride) {
+      const starts = [];
+      for (let i = 0; i + k <= s.length; i += stride) starts.push(i);
+      // final window ending at the last bucket, so a leak happening right now is seen
+      if (starts.at(-1) !== s.length - k) starts.push(s.length - k);
+      for (const i of starts) {
         const win = s.slice(i, i + k);
         const nonGap = win.filter((p) => p.rss != null);
         const pts = nonGap.filter((p) => p.rss > 0);
@@ -123,27 +128,35 @@ export function detectSpikes(points, totalRam, step) {
       if (h.reason === "rise") m.reason = "rise";
     } else merged.push({ ...h });
   }
-  // peakTs = first bucket reaching 90% of the max rise (top of the ramp). The argmax itself
-  // drifts across a long plateau with noise, away from the growth explainSpike looks for.
+  // base = lowest used_max before the max (a pressure hit can open the span high).
+  // peakTs = first bucket after base reaching 90% of the rise (top of the ramp). The argmax
+  // itself drifts across a long plateau with noise, away from the growth explainSpike sees.
+  // peakEnd = peakTs + step: exclusive end of the peak bucket; use it with spikeWindow().
   return merged.map(({ s, e, reason }) => {
     let mx = s;
     for (let j = s; j <= e; j++) if (points[j].used_max > points[mx].used_max) mx = j;
-    const base = points[s].used_max, top = points[mx].used_max;
-    let pk = s;
+    let lo = s;
+    for (let j = s; j <= mx; j++) if (points[j].used_max < points[lo].used_max) lo = j;
+    const base = points[lo].used_max, top = points[mx].used_max;
+    let pk = lo;
     while (points[pk].used_max - base < 0.9 * (top - base)) pk++;
-    return { startTs: points[s].ts, peakTs: points[pk].ts,
+    return { startTs: points[s].ts, peakTs: points[pk].ts, peakEnd: points[pk].ts + step,
              rise: top - base, reason };
   });
 }
 
-// Which apps grew in the EXPLAIN_WINDOW before the peak (ranked by growth, not size).
-export function explainSpike(apps, peakTs) {
+// Range for the full-resolution apps fetch behind explainSpike: [peakEnd - 600, peakEnd).
+export const spikeWindow = (spike) => ({ from: spike.peakEnd - 600, to: spike.peakEnd });
+
+// Which apps grew in the EXPLAIN_WINDOW before `end` (exclusive; pass spike.peakEnd),
+// ranked by growth, not size.
+export function explainSpike(apps, end) {
   const out = [];
   for (const [name, s] of Object.entries(apps)) {
     if (name === OTHER_SMALL) continue;
     const live = s.filter((p) => p.rss != null);
-    const a = live.find((p) => p.ts >= peakTs - EXPLAIN_WINDOW);
-    const b = live.findLast((p) => p.ts <= peakTs);
+    const a = live.find((p) => p.ts >= end - EXPLAIN_WINDOW);
+    const b = live.findLast((p) => p.ts < end);
     if (!a || !b) continue;
     const growth = b.rss - a.rss;
     if (growth > 0) out.push({ name, growth });
@@ -152,9 +165,11 @@ export function explainSpike(apps, peakTs) {
 }
 
 // Local day-of-week (0=Sun) x hour average `used`; null under 2 days of data.
+// Coverage = last - first + step (bucket width inferred from the points).
 export function heatmap(points) {
   const live = points.filter((p) => p.used != null);
-  if (!live.length || live.at(-1).ts - live[0].ts < 2 * 86400) return null;
+  const step = points.length > 1 ? points[1].ts - points[0].ts : 0;
+  if (!live.length || live.at(-1).ts - live[0].ts + step < 2 * 86400) return null;
   const sum = Array.from({ length: 7 }, () => new Array(24).fill(0));
   const n = Array.from({ length: 7 }, () => new Array(24).fill(0));
   for (const p of live) {

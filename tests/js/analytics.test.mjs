@@ -34,7 +34,7 @@ test("explainSpike names planted causes", async () => {
   for (const [i, s] of spikes.entries()) {
     const { from, to } = spikeWindow(s);
     const r = await src.apps(from, to, { step: meta.interval, top: "all" });
-    const ex = explainSpike(r.apps, s.peakEnd);
+    const ex = explainSpike(r.apps, s);
     assert.equal(ex[0].name, want[i], JSON.stringify(ex.slice(0, 3)));
     assert.ok(ex.every((e) => e.growth > 0 && e.name !== "Other (small apps)"));
   }
@@ -113,4 +113,34 @@ test("heatmap accepts exactly 2 days of buckets", () => {
   const pts = (n) => Array.from({ length: n }, (_, i) => ({ ts: FROM + i * 3600, used: 1 }));
   assert.notEqual(heatmap(pts(48)), null);
   assert.equal(heatmap(pts(47)), null);
+});
+
+test("explainSpike names planted causes at every range step", async () => {
+  const want = ["Docker", "Google Chrome"];
+  const ranges = [
+    ["7d", TO - 7 * 86400, TO, 630],
+    ["3d", FROM, TO, sys.step],
+    ...planted.map((t, i) => [`24h#${i}`, t - 12 * 3600, t + 12 * 3600, null]),
+  ];
+  for (const [label, from, to, wantStep] of ranges) {
+    const r = await src.system(from, to);
+    if (wantStep) assert.equal(r.step, wantStep, label);
+    const sp = detectSpikes(r.points, meta.total_ram, r.step)
+      .filter((s) => planted.some((t) => Math.abs(s.peakTs - t) <= 1800));
+    const idx = sp.map((s) => planted.findIndex((t) => Math.abs(s.peakTs - t) <= 1800));
+    assert.equal(sp.length, label.startsWith("24h") ? 1 : 2, `${label}: planted spikes detected`);
+    for (const [j, s] of sp.entries()) {
+      const w = spikeWindow(s);
+      const a = await src.apps(w.from, w.to, { step: meta.interval, top: "all" });
+      const ex = explainSpike(a.apps, s);
+      assert.equal(ex[0]?.name, want[idx[j]], `${label} step ${r.step}: ${JSON.stringify(ex.slice(0, 3))}`);
+    }
+  }
+});
+
+test("detectLeaks never flags Other (small apps)", async () => {
+  for (const from of [FROM, TO - 7 * 86400]) {
+    const a = await src.apps(from, TO, { top: "all" });
+    assert.ok(detectLeaks(a.apps, a.step).every((l) => l.name !== "Other (small apps)"));
+  }
 });

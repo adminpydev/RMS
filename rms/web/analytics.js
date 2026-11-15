@@ -71,7 +71,8 @@ function fit(pts) {
 export function detectLeaks(apps, step) {
   const out = [];
   for (const [name, s] of Object.entries(apps)) {
-    if (!s.length) continue;
+    // the small-apps bucket grows as apps churn into it; an aggregate, not a leak
+    if (!s.length || name === OTHER_SMALL) continue;
     const range = s.length * step;
     let best = null;
     for (const L of LEAK_WINDOWS) {
@@ -145,17 +146,18 @@ export function detectSpikes(points, totalRam, step) {
   });
 }
 
-// Range for the full-resolution apps fetch behind explainSpike: [peakEnd - 600, peakEnd).
-export const spikeWindow = (spike) => ({ from: spike.peakEnd - 600, to: spike.peakEnd });
+// Range for the full-resolution apps fetch behind explainSpike; covers the whole rise.
+export const spikeWindow = (spike) => ({ from: spike.startTs - EXPLAIN_WINDOW, to: spike.peakEnd });
 
-// Which apps grew in the EXPLAIN_WINDOW before `end` (exclusive; pass spike.peakEnd),
-// ranked by growth, not size.
-export function explainSpike(apps, end) {
+// Which apps grew over the whole detected rise, [startTs - EXPLAIN_WINDOW, peakEnd),
+// ranked by growth, not size. At coarse steps a fixed window before the peak misses the ramp.
+export function explainSpike(apps, spike) {
+  const from = spike.startTs - EXPLAIN_WINDOW, end = spike.peakEnd;
   const out = [];
   for (const [name, s] of Object.entries(apps)) {
     if (name === OTHER_SMALL) continue;
     const live = s.filter((p) => p.rss != null);
-    const a = live.find((p) => p.ts >= end - EXPLAIN_WINDOW);
+    const a = live.find((p) => p.ts >= from);
     const b = live.findLast((p) => p.ts < end);
     if (!a || !b) continue;
     const growth = b.rss - a.rss;

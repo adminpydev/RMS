@@ -1,7 +1,7 @@
 // RMS dashboard. One module, one render function per section. Data comes from
 // LiveSource (local server) or DemoSource (sample.json); analytics are pure functions.
 import uPlot from "./vendor/uPlot.esm.js";
-import { loadSource, LiveSource, OTHER_SMALL } from "./sources.js";
+import { loadSource, LiveSource } from "./sources.js";
 import { stackLayers, topApps, detectLeaks, detectSpikes, spikeWindow, explainSpike, heatmap } from "./analytics.js";
 
 const $ = (s) => document.querySelector(s);
@@ -79,7 +79,7 @@ async function refresh() {
     const causes = await Promise.all(spikes.map(async (s) => {
       const w = spikeWindow(s);
       const a = await src.apps(w.from, w.to, { step: meta.interval, top: "all" });
-      return explainSpike(a.apps, s.peakEnd).slice(0, 5);
+      return explainSpike(a.apps, s).slice(0, 5);
     }));
     if (my !== gen) return;
     view = { from, to, step: sys.step, points: sys.points, apps: apps.apps,
@@ -274,8 +274,7 @@ function selectRow(tr) {
 function renderLeaks(v) {
   const box = $("#leaks");
   dropCharts(box);
-  // The small-apps bucket grows as apps churn into it; that is not a leak.
-  const leaks = detectLeaks(v.apps, v.step).filter((l) => l.name !== OTHER_SMALL).sort((a, b) => b.growth - a.growth);
+  const leaks = detectLeaks(v.apps, v.step).sort((a, b) => b.growth - a.growth);
   if (!leaks.length) return empty(box, "No leaks detected in this range.");
   box.innerHTML = leaks.map((l, i) => `<article class="card">
       <h3>${esc(l.name)}</h3>

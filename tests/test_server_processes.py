@@ -122,7 +122,7 @@ def test_live(env):
     srv.ids[(5, 1)] = 42
     r, body = req(srv, "/api/live")
     d = json.loads(body)
-    assert r.status == 200 and d["ts"] == 1000 and d["processes"][0]["id"] == 42
+    assert r.status == 200 and d["ts"] == 1000 and d["processes"][0]["rss"] == 9
     assert srv.sampler.pokes == 0
     req(srv, "/api/live?fast=1")
     assert srv.sampler.pokes == 1

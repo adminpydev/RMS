@@ -3,7 +3,7 @@
 // live.js, process.js and insights-ui.js import the shared helpers exported here.
 import uPlot from "./vendor/uPlot.esm.js";
 import { loadSource, LiveSource, OTHER_SMALL } from "./sources.js";
-import { stackLayers, topApps, detectLeaks, processLeaks, detectSpikes, spikeWindow, explainSpike,
+import { stackLayers, topApps, detectLeaks, leakCulprits, detectSpikes, spikeWindow, explainSpike,
          spikeProcesses, heatmap } from "./analytics.js";
 import { insights } from "./insights.js";
 import { renderTree, procLink, shortCmd, bindProcess } from "./process.js";
@@ -79,6 +79,7 @@ async function refresh() {
   try {
     meta = await net(src.meta());
     renderHeader();
+    enableLive();
     if (meta.first_ts == null) {
       if (my !== gen) return;
       setStatus(null);
@@ -109,7 +110,7 @@ async function refresh() {
         if (procs) return spikeProcesses((await net(src.processes(w.from, w.to, { step: meta.interval, top: "all" }))).processes, s).slice(0, 5);
         return explainSpike((await net(src.apps(w.from, w.to, { step: meta.interval, top: "all" }))).apps, s).slice(0, 5);
       })),
-      Promise.all(leaks.map((l) => (procs && l.name !== OTHER_SMALL ? leakCulprits(l, sys.step) : []))),
+      Promise.all(leaks.map((l) => (procs && l.name !== OTHER_SMALL ? fetchCulprits(l, sys.step) : []))),
     ]);
     if (my !== gen) return;
     view = { from, to, step: sys.step, points: sys.points, apps: apps.apps,
@@ -127,18 +128,10 @@ async function refresh() {
   }
 }
 
-// Processes of a leaking app that leak themselves over the leak window; else its largest grower.
-async function leakCulprits(l, step) {
+// Responsible processes of an app leak, fetched over the leak window (see leakCulprits).
+async function fetchCulprits(l, step) {
   const r = await net(src.processes(l.startTs, l.endTs + step, { step, app: l.name, top: "all" }));
-  const found = processLeaks(r.processes, r.step).sort((a, b) => b.growth - a.growth);
-  if (found.length) return found;
-  let best = null;
-  for (const [id, p] of Object.entries(r.processes)) {
-    const s = p.series.filter((x) => x.rss != null);
-    const growth = s.length ? s.at(-1).rss - s[0].rss : 0;
-    if (growth > 0 && (!best || growth > best.growth)) best = { id, ...p, growth, largest: true };
-  }
-  return best ? [best] : [];
+  return leakCulprits(r.processes, r.step, l);
 }
 
 // ---------- charts ----------
@@ -411,11 +404,20 @@ function showTab(t, focus = false) {
   const hash = t === "live" ? "#live" : "";
   if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname + location.search);
   clearInterval(ticker);
-  if (t === "live") { renderLive(); ticker = setInterval(tickLive, 1000); }
+  if (t === "live") { clearTimeout(timer); renderLive(); ticker = setInterval(tickLive, 1000); }
   if (changed) {
     if (t === "overview" && view) refresh(); // Overview stops polling while hidden
     poll();
   }
+}
+
+// Tabs and insights need meta.features, so they appear once meta is known (init or any refresh).
+function enableLive() {
+  const tabs = $("#tabs");
+  if (!tabs.hidden || !has("live")) return;
+  tabs.hidden = false;
+  showTab(location.hash === "#live" ? "live" : "overview");
+  if (tab !== "live") poll(); // showTab already polled when it switched to Live
 }
 
 // One /api/live poll feeds both the insights strip and the Live table: 2 s (fast) while the
@@ -497,9 +499,7 @@ async function init() {
   setStatus(null);
   meta = await src.meta().catch(() => null);
   if (!isLive()) range = { preset: "3d" }; // the demo's planted events span its 3 days
-  $("#tabs").hidden = !has("live");
-  showTab(location.hash === "#live" ? "live" : "overview");
-  poll();
+  enableLive();
   refresh();
 }
 

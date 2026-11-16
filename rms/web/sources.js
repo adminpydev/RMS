@@ -130,6 +130,10 @@ export function bucketProcesses(dataset, from, to, step, { app, top = 25, ensure
   return out;
 }
 
+// Replay start, seconds after local midnight: 10:55, just before the planted Chrome renderer
+// spike (~11:00), so the fast-grower insight shows a few seconds after the demo loads.
+export const REPLAY_START = 10 * 3600 + 55 * 60;
+
 // Static demo data. Relative ts (seconds from day-1 local midnight) are anchored to the
 // viewer's local timezone so the demo workday lands 9-5 and the data ends at/before `now`.
 // `to` is exclusive, same as LiveSource.
@@ -201,11 +205,11 @@ export class DemoSource {
     return { id, ...meta, parent, children, series };
   }
 
-  // Simulated /api/live: a virtual clock replays the last day from 09:00 at 60x real time,
+  // Simulated /api/live: a virtual clock replays the last day from 10:55 at 60x real time,
   // wrapping at the dataset end. Spark = 30 s samples over the last 10 min.
   async live() {
     const { first_ts, last_ts, interval, total_ram } = this.info;
-    const start = first_ts + Math.floor((last_ts - first_ts) / 86400) * 86400 + 9 * 3600;
+    const start = first_ts + Math.floor((last_ts - first_ts) / 86400) * 86400 + REPLAY_START;
     const P = last_ts - start + interval, x = 60 * (this.clock() - this.t0);
     const t = start + Math.floor(((x % P) + P) % P); // positive modulo: clock skew stays in range
     const ts = this.data.system.ts, sys = this.data.system;

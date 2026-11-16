@@ -17,7 +17,7 @@ export function renderInsights(list, live) {
   box.innerHTML = list.length
     ? `<ul>${list.map((it, i) => `<li class="${it.severity === "warn" ? "warn" : "info"}"><span class="sr">${it.severity === "warn" ? "Warning:" : "Note:"}</span>${
         it.pid != null
-          ? `<button type="button" class="link" data-insight="${i}" data-key="${esc(procKey(it))}">${esc(it.text)}</button>`
+          ? `<button type="button" class="link" data-insight="${i}" data-key="${i}:${esc(procKey(it))}">${esc(it.text)}</button>`
           : `<span>${esc(it.text)}</span>`}</li>`).join("")}</ul>`
     : `<p class="calm">All calm. Nothing unusual right now.</p>`;
   if (focused) box.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();

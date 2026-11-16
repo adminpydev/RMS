@@ -55,6 +55,7 @@ export function renderTree(box, ps) {
   };
   walk(roots, 0);
   const shown = out.slice(0, TREE_MAX);
+  const focused = document.activeElement?.closest?.("#app-tree tr")?.dataset.key; // survive the poll rebuild
   box.innerHTML = `<div class="table-wrap"><table class="apps tree">
     <thead><tr><th scope="col" class="num">PID</th><th scope="col">Process</th><th scope="col" class="cmdcol">Command</th><th scope="col">User</th><th scope="col" class="num">Avg</th><th scope="col" class="num">Peak</th><th scope="col">Trend</th></tr></thead>
     <tbody>${shown.map(([r, d]) => `<tr tabindex="0" data-open-id="${esc(r.id)}" data-key="${esc(procKey(r))}">
@@ -64,11 +65,12 @@ export function renderTree(box, ps) {
       <td>${esc(r.user ?? "–")}</td>
       <td class="num">${fmtBytes(r.avg)}</td><td class="num">${fmtBytes(r.peak)}</td><td>${spark(r.spark)}</td></tr>`).join("")}</tbody>
   </table></div>${out.length > shown.length ? `<p class="hint">+${out.length - shown.length} more</p>` : ""}`;
+  if (focused) box.querySelector(`tr[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
 
 // ---------- detail dialog ----------
 
-let opener = null, openerKey = null, token = 0;
+let opener = null, openerKey = null, openerBox = null, token = 0;
 const dlg = () => document.getElementById("proc");
 
 // ref: {id} for a stored process, or a live row ({id: null, pid, start_ts, ...}).
@@ -77,6 +79,7 @@ export async function openProcess(ref, from) {
   if (!d.open) {
     opener = from ?? document.activeElement;
     openerKey = opener?.dataset?.key ?? null;
+    openerBox = opener?.closest?.("[id]") ?? null; // rebuilt openers are looked up only in here
     d.showModal();
   }
   const my = ++token, body = document.getElementById("proc-body");
@@ -161,8 +164,8 @@ export function bindProcess() {
     dropCharts(d);
     // the opener may have been rebuilt by a poll while the dialog was open
     const back = opener?.isConnected ? opener
-      : openerKey && document.querySelector(`[data-key="${CSS.escape(openerKey)}"]`);
+      : openerKey && openerBox?.querySelector(`[data-key="${CSS.escape(openerKey)}"]`);
     back?.focus();
-    opener = openerKey = null;
+    opener = openerKey = openerBox = null;
   });
 }

@@ -38,8 +38,9 @@ export function renderLive() {
   const q = query.trim().toLowerCase();
   const hit = q ? all.filter((p) => [p.name, p.cmdline, p.app, String(p.pid)].some((s) => s?.toLowerCase().includes(q))) : all;
   const rows = [...hit].sort(cmp).slice(0, MAX_ROWS);
-  const hidden = all.length - rows.length;
-  $("#live-count").textContent = `Showing ${rows.length} of ${all.length} processes${hidden ? ` · ${hidden} hidden` : ""}`;
+  const unmatched = all.length - hit.length, more = hit.length - rows.length;
+  $("#live-count").textContent = `Showing ${rows.length} of ${all.length} processes${
+    unmatched ? ` · ${unmatched} not matching` : ""}${more ? ` · +${more} more` : ""}`;
   const focused = document.activeElement?.closest?.("#live-body tr")?.dataset.key; // survive the rebuild
   body.innerHTML = rows.length ? rows.map((p) => `<tr tabindex="0" data-key="${esc(procKey(p))}">
       <td class="num">${p.pid}</td>

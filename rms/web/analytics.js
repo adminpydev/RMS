@@ -90,6 +90,29 @@ export function processLeaks(processes, step) {
   return out;
 }
 
+// "Responsible process(es)" for an app leak, from that app's /api/processes series over the
+// leak window. Processes passing processLeaks, else the single largest grower; `growth` is
+// always measured over the APP leak window (rss at the last bucket <= endTs minus rss at the
+// first bucket >= startTs) so it lines up with the app card. `largest` marks the fallback.
+export function leakCulprits(processes, step, leak) {
+  const grow = (p) => {
+    const s = p.series.filter((x) => x.rss != null);
+    const a = s.find((x) => x.ts >= leak.startTs), b = s.findLast((x) => x.ts <= leak.endTs);
+    return a && b ? b.rss - a.rss : null;
+  };
+  const found = processLeaks(processes, step).map((l) => ({ ...l, growth: grow(processes[l.id]) }))
+    .sort((a, b) => b.growth - a.growth);
+  if (found.length) return found;
+  let best = null;
+  for (const [id, p] of Object.entries(processes)) {
+    const growth = grow(p);
+    if (growth > 0 && (!best || growth > best.growth)) {
+      best = { id, pid: p.pid, start_ts: p.start_ts, name: p.name, app: p.app, cmdline: p.cmdline, growth, largest: true };
+    }
+  }
+  return best ? [best] : [];
+}
+
 // Strongest leak window of one series, or null.
 function leakOf(s, step) {
   if (!s.length) return null;

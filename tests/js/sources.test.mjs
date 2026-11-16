@@ -1,89 +1,125 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { bucketize, DemoSource } from "../../rms/web/sources.js";
+import { DemoSource, LiveSource } from "../../rms/web/sources.js";
+import { insights } from "../../rms/web/insights.js";
 
 const sample = JSON.parse(readFileSync(new URL("../../site/sample.json", import.meta.url)));
-const NOW = 1800000000; // fixed anchor so tests are deterministic
+const NOW = 1800000000; // fixed real-time anchor so tests are deterministic (and TZ-independent)
+const T0 = sample.meta.t0;
+const MB = 2 ** 20;
+const PID = { notion: 3121, notionApp: 3105, slack: 3502, python: 14207 };
 
-const tiny = {
-  meta: { interval: 10, total_ram: 1000, first_ts: 0, last_ts: 10, relative: false },
-  system: { ts: [0, 10], used: [500, 500], available: [500, 500], cached: [null, null],
-            compressed: [0, 0], swap_used: [0, 0], pressure: [1, 1] },
-  apps: { A: { rss: [100, null], procs: [2, null] } },
+// elapsed real seconds -> DemoSource with an injected clock
+const demo = () => {
+  const c = { t: NOW };
+  return [new DemoSource(sample, { clock: () => c.t }), (s) => { c.t = NOW + s; }];
 };
+const at = async (s, src, set) => { set(s); const live = await src.live(); return [live, insights({ live })]; };
+const has = (ins, re, pid) => ins.some((i) => re.test(i.text) && (pid == null || i.pid === pid));
 
-test("bucketize matches python semantics", () => {
-  const { system, apps } = bucketize(tiny, 0, 20, 20);
-  assert.equal(apps.apps.A[0].rss, 50);
-  assert.equal(apps.apps.A[0].rss_max, 100);
-  assert.equal(apps.apps.A[0].procs, 1);
-  assert.equal(system.points[0].used, 500);
-  // gap bucket -> all null; `to` exclusive
-  const g = bucketize(tiny, 0, 40, 20);
-  assert.equal(g.system.points.length, 2);
-  assert.equal(g.system.points[1].used, null);
-  assert.equal(g.apps.apps.A[1].rss, null);
-});
-
-test("bucketize top keeps Other (small apps)", () => {
-  const ds = structuredClone(tiny);
-  ds.apps = { a: { rss: [300, 300], procs: [1, 1] }, b: { rss: [200, 200], procs: [1, 1] },
-              c: { rss: [100, 100], procs: [1, 1] },
-              "Other (small apps)": { rss: [5, 5], procs: [9, 9] } };
-  assert.deepEqual(Object.keys(bucketize(ds, 0, 20, 10, 2).apps.apps).sort(),
-                   ["Other (small apps)", "a", "b"]);
-  assert.equal(Object.keys(bucketize(ds, 0, 20, 10, "all").apps.apps).length, 4);
-});
-
-test("DemoSource ends at or before now and keeps 9-5 local", async () => {
-  const src = new DemoSource(sample, NOW);
+test("meta: live-only demo", async () => {
+  const [src] = demo();
   const m = await src.meta();
   assert.equal(m.mode, "demo");
-  assert.ok(m.last_ts <= NOW);
-  assert.equal(new Date(m.first_ts * 1000).getHours(), 0);
-  const { points } = await src.system(m.first_ts, m.last_ts + 1);
-  assert.ok(points.length <= 1000);
-  assert.ok(points.every((p) => p.ts <= NOW));
-  const avg = (h) => {
-    const v = points.filter((p) => p.used != null && new Date(p.ts * 1000).getHours() === h);
-    return v.reduce((s, p) => s + p.used, 0) / v.length;
+  assert.deepEqual(m.features, ["live"]);
+  assert.equal(m.interval, 10);
+  assert.equal(m.total_ram, sample.meta.total_ram);
+});
+
+test("first live() starts at T0 (anchored to now) with steady + fast grower insights", async () => {
+  const [src, set] = demo();
+  const [live, ins] = await at(0, src, set);
+  assert.equal(live.ts, NOW);
+  assert.equal(live.simulated, true);
+  assert.equal(live.resolution, 2);
+  for (const k of ["total", "used", "available", "swap_used", "swap_used_10m_ago", "pressure"]) {
+    assert.ok(k in live.system, k);
+  }
+  const p = live.processes.find((x) => x.pid === PID.notion);
+  for (const k of ["pid", "ppid", "start_ts", "name", "app", "user", "cmdline", "rss", "cpu", "threads",
+                   "growth_5m", "growth_30m", "trend", "spark"]) assert.ok(k in p, k);
+  assert.ok(p.growth_30m > 200 * MB && p.trend.r2 > 0.8, JSON.stringify(p.trend));
+  assert.ok(p.spark.length > 1 && p.spark.length <= 30 && p.spark.at(-1) === p.rss);
+  assert.ok(has(ins, /^Notion Helper \(Renderer\) \(PID 3121\) grew steadily: \+\d+ MB in 30 min\.$/, PID.notion), JSON.stringify(ins));
+  assert.ok(has(ins, /grew \d+ MB in the last 5 min\.$/, PID.slack), JSON.stringify(ins));
+  assert.ok(!live.processes.some((x) => x.pid === PID.python));
+});
+
+test("newcomer appears at elapsed 1 s; young process has no growth_30m/trend", async () => {
+  const [src, set] = demo();
+  const [live, ins] = await at(1, src, set);
+  assert.equal(live.ts, NOW + 60);
+  const py = live.processes.find((x) => x.pid === PID.python);
+  assert.equal(py.growth_30m, null);
+  assert.equal(py.trend, null);
+  assert.ok(ins.some((i) => i.severity === "info" && i.pid === PID.python && /^New process `/.test(i.text)),
+            JSON.stringify(ins));
+});
+
+test("swap insight at T0+30 min (fires T0+26.3..33.7), pressure at T0+45 min", async () => {
+  const [src, set] = demo();
+  let [, ins] = await at(30, src, set);
+  assert.ok(has(ins, /^Swap grew .* in 10 min\./), JSON.stringify(ins));
+  [, ins] = await at(45, src, set);
+  assert.ok(has(ins, /^Memory pressure is high\./), JSON.stringify(ins));
+  assert.equal(ins[0].text.startsWith("Memory pressure"), true);
+});
+
+test("replay wraps to T0 and insights refire", async () => {
+  const [src, set] = demo();
+  const P = (sample.meta.last_ts - T0 + sample.meta.interval) / 60; // wall seconds per loop
+  let [live, ins] = await at(P - 0.1, src, set);
+  assert.equal(live.ts, NOW + sample.meta.last_ts - T0);
+  assert.ok(!has(ins, /steadily/));
+  [live, ins] = await at(P, src, set);
+  assert.equal(live.ts, NOW);
+  assert.ok(has(ins, /steadily/, PID.notion) && has(ins, /last 5 min/, PID.slack), JSON.stringify(ins));
+  [live] = await at(-1, src, set); // clock skew: still inside T0..last_ts
+  assert.ok(live.ts >= NOW && live.ts <= NOW + sample.meta.last_ts - T0, `${live.ts - NOW}`);
+});
+
+test("process(): server shape, parent/children, 30-min series, not found", async () => {
+  const [src, set] = demo();
+  set(3);
+  const live = await src.live();
+  const row = live.processes.find((x) => x.pid === PID.notion);
+  const d = await src.process(row.pid, row.start_ts);
+  for (const k of ["pid", "ppid", "start_ts", "name", "app", "user", "cmdline"]) assert.equal(d[k], row[k], k);
+  assert.equal(d.alive, true);
+  assert.deepEqual(d.parent, { pid: PID.notionApp, name: "Notion" });
+  assert.deepEqual(d.children, []);
+  assert.equal(d.series.length, 181);
+  assert.equal(d.series.at(-1).ts, live.ts);
+  assert.equal(d.series[0].ts, live.ts - 1800);
+  assert.ok(d.series.every((s) => s.rss > 0 && "cpu" in s));
+  const app = live.processes.find((x) => x.pid === PID.notionApp);
+  const a = await src.process(app.pid, app.start_ts);
+  assert.deepEqual(a.children.map((c) => [c.pid, c.name]), [[PID.notion, "Notion Helper (Renderer)"]]);
+  // python3 started 2 sim-min ago: series only since start
+  const py = live.processes.find((x) => x.pid === PID.python);
+  assert.equal((await src.process(py.pid, py.start_ts)).series.length, 13);
+  await assert.rejects(src.process(PID.notion, row.start_ts + 1), /not found/);
+  set(0); // python3 not started yet
+  await assert.rejects(src.process(py.pid, py.start_ts), /not found/);
+});
+
+test("LiveSource calls the v0.3 endpoints", async () => {
+  const calls = [], orig = globalThis.fetch;
+  globalThis.fetch = async (u) => {
+    calls.push(u);
+    const nf = u.startsWith("/api/process") && u.includes("pid=9");
+    return { ok: !nf, status: nf ? 404 : 200, json: async () => (nf ? { error: "not found" } : { u }) };
   };
-  assert.ok(avg(13) > avg(3), `13h ${avg(13)} vs 3h ${avg(3)}`);
-});
-
-test("DemoSource respects top=all", async () => {
-  const src = new DemoSource(sample, NOW);
-  const m = await src.meta();
-  const r = await src.apps(m.first_ts, m.last_ts + 1, { top: "all" });
-  assert.equal(Object.keys(r.apps).length, 13);
-  assert.equal(Object.keys((await src.apps(m.first_ts, m.last_ts + 1, { top: 3 })).apps).length, 4);
-});
-
-test("DemoSource step clamp mirrors server", async () => {
-  const src = new DemoSource(sample, NOW);
-  const m = await src.meta();
-  assert.equal((await src.system(m.first_ts, m.first_ts + 3600)).step, 30); // pick_step
-  assert.equal((await src.system(m.first_ts, m.first_ts + 3600, 1)).step, 30); // >= interval
-  assert.equal((await src.system(m.first_ts, m.first_ts + 3600, 45)).step, 60); // multiple
-  const r = await src.system(m.first_ts, m.last_ts + 1, 30); // <= 5000 points
-  assert.ok(r.points.length <= 5000 && r.step % 30 === 0);
-});
-
-test("DemoSource pads sparse (i0) processes to dense", async () => {
-  const ds = structuredClone(tiny);
-  ds.system.ts = [0, 10, 20, 30];
-  for (const c of ["used", "available", "cached", "compressed", "swap_used", "pressure"]) ds.system[c] = [1, 1, 1, 1];
-  ds.meta.last_ts = 30;
-  ds.processes = { 7: { pid: 7, ppid: 1, name: "n", app: "A", user: "u", cmdline: "x", start_ts: 0,
-                        i0: 1, rss: [5, null, 9], cpu: [1, null, 2] } };
-  const src = new DemoSource(ds, NOW);
-  const p = src.data.processes[7];
-  assert.deepEqual(p.rss, [null, 5, null, 9]);
-  assert.deepEqual(p.cpu, [null, 1, null, 2]);
-  assert.equal(p.i0, undefined);
-  assert.equal(p.first_seen, 10);
-  assert.equal(p.last_seen, 30);
-  const d = await src.process("7", 0, 40, 10);
-  assert.deepEqual(d.series.map((x) => x.rss), [0, 5, 0, 9]); // missing in a sampled bucket = 0, like the store
+  try {
+    const s = new LiveSource();
+    await s.meta();
+    await s.live();
+    await s.live({ fast: true });
+    await s.process(12, 345);
+    await assert.rejects(s.process(9, 1), /not found/);
+    assert.deepEqual(calls.map((u) => u.replace(/\?$/, "")),
+                     ["/api/meta", "/api/live", "/api/live?fast=1", "/api/process?pid=12&start_ts=345",
+                      "/api/process?pid=9&start_ts=1"]);
+  } finally { globalThis.fetch = orig; }
 });

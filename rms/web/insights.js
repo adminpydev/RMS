@@ -1,4 +1,4 @@
-// Insights strip: pure function over /api/live (or DemoSource.live) plus current-range leaks.
+// Insights strip: pure function over /api/live (or DemoSource.live).
 // Returns plain text; the UI escapes it (process strings are untrusted).
 const MiB = 2 ** 20, GiB = 2 ** 30;
 const MAX = 4;
@@ -11,10 +11,10 @@ const clip = (v, n = 40) => {
   const sp = s.lastIndexOf(" ", n - 1);
   return `${sp > 0 ? s.slice(0, sp) : s.slice(0, n - 1)}…`;
 };
-const ref = (p) => ({ pid: p.pid, start_ts: p.start_ts, id: p.id, app: p.app });
+const ref = (p) => ({ pid: p.pid, start_ts: p.start_ts, app: p.app });
 
-export function insights({ live, leaks = [], now }) {
-  now = now ?? live?.ts ?? null; // null: skip time-based rules (leak, newcomer)
+export function insights({ live, now }) {
+  now = now ?? live?.ts ?? null; // null: skip time-based rules (newcomer)
   const out = [];
   const sys = live?.system, procs = live?.processes ?? [];
   if (sys) {
@@ -31,20 +31,20 @@ export function insights({ live, leaks = [], now }) {
                  text: `Swap grew ${size(sys.swap_used - sys.swap_used_10m_ago)} in 10 min. The system is short on RAM.` });
     }
   }
-  for (const p of procs.filter((p) => p.growth_5m > 250 * MiB).sort((a, b) => b.growth_5m - a.growth_5m)) {
-    out.push({ severity: "warn", text: `${clip(p.name)} (PID ${p.pid}) grew ${size(p.growth_5m)} in the last 5 min.`,
-               ...ref(p) });
-  }
-  for (const l of now == null ? [] : leaks.filter((l) => l.startTs <= now && l.endTs >= now - 900)) {
-    const h = Math.max(1, Math.round((l.endTs - l.startTs) / 3600));
-    const pid = l.pid != null ? ` (PID ${l.pid})` : "";
-    out.push({ severity: "warn", text: `${clip(l.name)} is still leaking: +${size(l.slopePerHour)}/h for ${h} h${pid}.`,
-               pid: l.pid, start_ts: l.start_ts, id: l.id, app: l.app ?? l.name });
-  }
-  for (const p of now == null ? [] : procs.filter((p) => p.start_ts >= now - 600 && p.rss > 500 * MiB)) {
-    out.push({ severity: "info",
-               text: `New process \`${clip(p.cmdline || p.name)}\` (PID ${p.pid}) is using ${size(p.rss)}.`, ...ref(p) });
-  }
-  // stable sort: warnings first, rule order within a severity
-  return out.sort((a, b) => (a.severity === "warn" ? 0 : 1) - (b.severity === "warn" ? 0 : 1)).slice(0, MAX);
+  const seen = new Set(); // one insight per process: earlier rule wins (fast beats steady)
+  const add = (list, key, severity, text) => {
+    for (const p of list.sort((a, b) => b[key] - a[key])) {
+      const k = `${p.pid}:${p.start_ts}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ severity, text: text(p), ...ref(p) });
+    }
+  };
+  add(procs.filter((p) => p.growth_5m > 250 * MiB), "growth_5m", "warn",
+      (p) => `${clip(p.name)} (PID ${p.pid}) grew ${size(p.growth_5m)} in the last 5 min.`);
+  add(procs.filter((p) => p.growth_30m > 200 * MiB && p.trend?.r2 > 0.8), "growth_30m", "warn",
+      (p) => `${clip(p.name)} (PID ${p.pid}) grew steadily: +${size(p.growth_30m)} in 30 min.`);
+  add(now == null ? [] : procs.filter((p) => p.start_ts >= now - 600 && p.rss > 500 * MiB), "rss", "info",
+      (p) => `New process \`${clip(p.cmdline || p.name)}\` (PID ${p.pid}) is using ${size(p.rss)}.`);
+  return out.slice(0, MAX);
 }

@@ -1,14 +1,13 @@
-// Live tab: table over /api/live (or the demo replay). Polling lives in app.js; this module
-// renders the latest snapshot and owns sort / search / pause state.
-import { esc, fmtBytes, spark } from "./app.js";
-import { openProcess, fmtCpu, procKey } from "./process.js";
+// Live table over /api/live (or the demo replay). Polling lives in app.js; this module
+// renders the latest snapshot and owns sort / search / pause state. Rows carry data-key,
+// so the shared handler in process.js opens their dialog.
+import { esc, fmtBytes, fmtCpu, procKey, spark } from "./util.js";
 
 const MAX_ROWS = 200;
-const COLS = 9;
+const COLS = 10;
 const $ = (s) => document.querySelector(s);
 
 let data = null, at = 0, sort = { key: "rss", dir: -1 }, query = "", paused = false, error = null;
-let onPause = () => {};
 
 export const isPaused = () => paused;
 
@@ -16,6 +15,7 @@ export function setLive(d) { data = d; at = Date.now(); error = null; renderLive
 export function liveError(msg) { error = msg; tickLive(); }
 
 const delta = (g) => (g == null ? "–" : `${g > 0 ? "+" : g < 0 ? "−" : ""}${fmtBytes(Math.abs(g))}`);
+const dcell = (g) => `<td class="num ${g > 0 ? "up" : g < 0 ? "down" : ""}">${delta(g)}</td>`;
 
 function cmp(a, b) {
   const x = a[sort.key], y = b[sort.key];
@@ -41,22 +41,22 @@ export function renderLive() {
   const unmatched = all.length - hit.length, more = hit.length - rows.length;
   $("#live-count").textContent = `Showing ${rows.length} of ${all.length} processes${
     unmatched ? ` · ${unmatched} not matching` : ""}${more ? ` · +${more} more` : ""}`;
-  const focused = document.activeElement?.closest?.("#live-body tr")?.dataset.key; // survive the rebuild
+  const focused = document.activeElement?.closest?.("#live-body tr")?.dataset.key; // survive rebuild
   body.innerHTML = rows.length ? rows.map((p) => `<tr tabindex="0" data-key="${esc(procKey(p))}">
-      <td class="num">${p.pid}</td>
-      <th scope="row" title="${esc(p.cmdline ?? p.name)}">${esc(p.name ?? "?")}</th>
-      <td class="clip" title="${esc(p.app ?? "")}">${esc(p.app ?? "–")}</td>
-      <td class="clip">${esc(p.user ?? "–")}</td>
-      <td class="num">${fmtBytes(p.rss)}</td>
-      <td class="num ${p.growth_5m > 0 ? "up" : p.growth_5m < 0 ? "down" : ""}">${delta(p.growth_5m)}</td>
-      <td class="num">${fmtCpu(p.cpu)}</td>
-      <td class="num">${p.threads ?? "–"}</td>
-      <td>${p.spark?.length ? spark(p.spark) : ""}</td></tr>`).join("")
+    <td class="num">${esc(p.pid)}</td>
+    <th scope="row" title="${esc(p.cmdline ?? p.name)}">${esc(p.name ?? "?")}</th>
+    <td class="clip" title="${esc(p.app ?? "")}">${esc(p.app ?? "–")}</td>
+    <td class="clip">${esc(p.user ?? "–")}</td>
+    <td class="num">${fmtBytes(p.rss)}</td>
+    ${dcell(p.growth_5m)}${dcell(p.growth_30m)}
+    <td class="num">${fmtCpu(p.cpu)}</td>
+    <td class="num">${esc(p.threads ?? "–")}</td>
+    <td>${p.spark?.length ? spark(p.spark) : ""}</td></tr>`).join("")
     : `<tr><td colspan="${COLS}" class="empty">No process matches “${esc(query)}”.</td></tr>`;
   if (focused) body.querySelector(`tr[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
 
-// "Updated N s ago" line; app.js calls this every second while the tab is shown.
+// "Updated N s ago" line; app.js calls it every second.
 export function tickLive() {
   const el = $("#live-meta");
   if (error) return void (el.textContent = error);
@@ -64,17 +64,11 @@ export function tickLive() {
   const parts = [];
   if (data.simulated) parts.push("Simulated replay of sample data");
   parts.push(`${paused ? "Paused · updated" : "Updated"} ${Math.max(0, Math.round((Date.now() - at) / 1000))} s ago`);
-  if (data.resolution) parts.push(`${data.resolution} s resolution`);
+  if (data.resolution) parts.push(`${data.resolution} s samples`);
   el.textContent = parts.join(" · ");
 }
 
-function open(tr) {
-  const p = data?.processes.find((r) => procKey(r) === tr?.dataset.key);
-  if (p) openProcess(p, tr);
-}
-
 export function bindLive(pauseChanged) {
-  onPause = pauseChanged;
   document.querySelectorAll("#live-table th[data-sort] button").forEach((b) => b.addEventListener("click", () => {
     const k = b.closest("th").dataset.sort;
     // numbers start high-to-low, text A-Z
@@ -88,13 +82,6 @@ export function bindLive(pauseChanged) {
     pause.setAttribute("aria-pressed", String(paused));
     pause.textContent = paused ? "Resume" : "Pause";
     tickLive();
-    onPause();
-  });
-  const body = $("#live-body");
-  body.addEventListener("click", (e) => open(e.target.closest("tr")));
-  body.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    e.preventDefault();
-    open(e.target.closest("tr"));
+    pauseChanged();
   });
 }

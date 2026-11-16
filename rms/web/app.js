@@ -131,7 +131,7 @@ async function refresh() {
 // Responsible processes of an app leak, fetched over the leak window (see leakCulprits).
 async function fetchCulprits(l, step) {
   const r = await net(src.processes(l.startTs, l.endTs + step, { step, app: l.name, top: "all" }));
-  return leakCulprits(r.processes, r.step, l);
+  return leakCulprits(r.processes, l);
 }
 
 // ---------- charts ----------
@@ -340,7 +340,7 @@ function renderLeaks(v) {
       <h3>${esc(l.name)}</h3>
       <div class="stat">${plus(l.slopePerHour)}/h</div>
       <p class="meta">${plus(l.growth)} from ${fmtTime(l.startTs)} to ${fmtTime(l.endTs)} · fit R² <span class="mono">${l.r2.toFixed(2)}</span></p>
-      ${l.culprits.length ? `<h4>Responsible process(es)</h4><ol>${l.culprits.map((c) => `<li><span>${procLink(c, `PID ${c.pid} ${shortCmd(c)}`)}${c.largest ? ` <span class="muted">largest grower</span>` : ""}</span><span class="num">${plus(c.growth)}</span></li>`).join("")}</ol>` : ""}
+      ${l.culprits.length ? `<h4>Responsible process(es)</h4><ol class="wrap">${l.culprits.map((c) => `<li><span>${procLink(c, `PID ${c.pid} ${shortCmd(c)}`)}${c.largest ? ` <span class="muted">largest grower</span>` : ""}</span><span class="num">${plus(c.growth)} · ${plus(c.slopePerHour)}/h</span></li>`).join("")}</ol>` : ""}
       <div class="chart" data-leak="${i}" role="figure" aria-label="Memory used by ${esc(l.name)} over the selected range"></div>
     </article>`).join("");
   leaks.forEach((l, i) => rssChart(box.querySelector(`[data-leak="${i}"]`), v.apps[l.name], 140));
@@ -437,7 +437,8 @@ async function poll() {
     console.error(e);
     if (fast) liveError(LOST);
   }
-  liveTimer = setTimeout(poll, fast ? 2000 : 10000);
+  // demo replay is free to poll, and its planted events are short: 3 s on Overview there
+  liveTimer = setTimeout(poll, fast ? 2000 : meta.mode === "demo" ? 3000 : 10000);
 }
 
 // Current-range app leaks, tagged with their top responsible process for the insight link.

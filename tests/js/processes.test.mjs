@@ -70,35 +70,34 @@ test("processLeaks on demo 3d finds only the Notion renderer", async () => {
   assert.equal(L[0].start_ts, FROM + 34080);
 });
 
-test("leakCulprits measures the renderer over the Notion app leak window", async () => {
+test("leakCulprits fits the Notion renderer over the app leak window, like the app card", async () => {
   const a = await src.apps(FROM, TO, { top: "all" });
   const [leak] = detectLeaks(a.apps, a.step).filter((l) => l.name === "Notion");
   const r = await src.processes(leak.startTs, leak.endTs + a.step, { step: a.step, app: "Notion", top: "all" });
-  const C = leakCulprits(r.processes, r.step, leak);
+  const C = leakCulprits(r.processes, leak);
   assert.deepEqual(C.map((c) => c.pid), [3121]);
-  assert.ok(!C[0].largest && C[0].id && C[0].start_ts);
-  // same window rule on the app series: the renderer accounts for most of the app's growth
-  const s = a.apps.Notion.filter((p) => p.rss != null);
-  const appGrowth = s.findLast((p) => p.ts <= leak.endTs).rss - s.find((p) => p.ts >= leak.startTs).rss;
-  assert.ok(C[0].growth > 0.75 * appGrowth && C[0].growth <= appGrowth, `${C[0].growth / MB} vs ${appGrowth / MB}`);
+  assert.ok(!C[0].largest && C[0].id && C[0].start_ts && C[0].slopePerHour > 0);
+  assert.ok(C[0].growth >= 0.7 * leak.growth && C[0].growth <= 1.05 * leak.growth,
+            `${C[0].growth / MB} vs ${leak.growth / MB}`);
 });
 
-test("leakCulprits falls back to the largest window grower", () => {
-  const ser = (v) => v.map((rss, i) => ({ ts: i * 60, rss, rss_max: rss, cpu: null }));
+test("leakCulprits falls back to the largest fitted grower", () => {
+  const ser = (v) => v.map((rss, i) => ({ ts: i * 3600, rss, rss_max: rss, cpu: null }));
   const ps = { a: { pid: 1, start_ts: 0, name: "a", series: ser([10, 20, 30]) },
-               b: { pid: 2, start_ts: 0, name: "b", series: ser([10, 50, 90]) } };
-  const C = leakCulprits(ps, 60, { startTs: 60, endTs: 120 });
-  assert.deepEqual(C.map((c) => [c.id, c.growth, c.largest]), [["b", 40, true]]);
+               b: { pid: 2, start_ts: 0, name: "b", series: ser([10, 50, 90]) },
+               c: { pid: 3, start_ts: 0, name: "c", series: ser([90, 50, 10]) } };
+  const C = leakCulprits(ps, { startTs: 0, endTs: 7200 });
+  assert.deepEqual(C.map((c) => [c.id, Math.round(c.growth), Math.round(c.slopePerHour), c.largest]), [["b", 80, 40, true]]);
 });
 
-test("demo replay shows the Chrome renderer fast-grower insight within 10 s of load", async () => {
+test("demo replay shows the Chrome renderer fast-grower insight within 6 s of load", async () => {
   let t = 0;
   const s = new DemoSource(sample, NOW, () => t);
   let seen = null;
-  for (t = 0; t <= 10 && !seen; t += 2) {
+  for (t = 0; t <= 6 && !seen; t += 1) {
     seen = insights({ live: await s.live() }).find((i) => i.pid === 2402);
   }
-  assert.ok(seen, "no Chrome renderer insight in the first 10 s");
+  assert.ok(seen, "no Chrome renderer insight in the first 6 s");
 });
 
 const planted = [FROM + 14 * 3600, FROM + 2 * 86400 + 11 * 3600];
@@ -125,7 +124,7 @@ test("spikeProcesses names qemu then the Chrome renderer at every range step", a
   }
 });
 
-test("live() replays at 60x from 10:55 on the last day and wraps", async () => {
+test("live() replays at 60x from 10:58 on the last day and wraps", async () => {
   let t = 1000;
   const s = new DemoSource(sample, NOW, () => t);
   const a = await s.live();
@@ -133,7 +132,7 @@ test("live() replays at 60x from 10:55 on the last day and wraps", async () => {
   assert.equal(a.resolution, 2);
   assert.equal(a.ts, FROM + 2 * 86400 + REPLAY_START);
   assert.equal(new Date(a.ts * 1000).getHours(), 10);
-  assert.equal(new Date(a.ts * 1000).getMinutes(), 55);
+  assert.equal(new Date(a.ts * 1000).getMinutes(), 58);
   t += 1;
   const b = await s.live({ fast: true });
   assert.equal(b.ts - a.ts, 60);
@@ -152,7 +151,7 @@ test("live() replays at 60x from 10:55 on the last day and wraps", async () => {
   assert.match(node.cmdline, /--api-key \*\*\*/);
   assert.ok(py.growth_5m > 250 * MB, `${py.growth_5m / MB}`);
   assert.ok(e.system.swap_used_10m_ago != null);
-  t += 1; // past the end -> back to 10:55 (+ a little)
+  t += 1; // past the end -> back to 10:58 (+ a little)
   const w = await s.live();
   assert.ok(w.ts >= a.ts && w.ts < a.ts + 120, `${w.ts - a.ts}`);
   t = 999; // clock skew: elapsed -1 s still lands inside the replay range

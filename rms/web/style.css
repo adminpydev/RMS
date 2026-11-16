@@ -238,6 +238,9 @@ table.apps { width: 100%; border-collapse: collapse; font-size: 14px; }
 .card h4 { margin: 4px 0 4px; font-size: 12px; font-weight: 500; color: var(--muted); }
 .card li > span:first-child { min-width: 0; }
 .card li .num { flex: none; white-space: nowrap; }
+.card ol.wrap li { flex-wrap: wrap; column-gap: 12px; row-gap: 0; }
+.card ol.wrap li > span:first-child { flex: 1 1 12em; }
+.card ol.wrap li .num { margin-left: auto; }
 
 dialog#proc {
   width: min(760px, calc(100vw - 24px)); max-height: calc(100vh - 32px); padding: 0;

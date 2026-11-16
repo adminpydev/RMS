@@ -90,27 +90,27 @@ export function processLeaks(processes, step) {
   return out;
 }
 
-// "Responsible process(es)" for an app leak, from that app's /api/processes series over the
-// leak window. Processes passing processLeaks, else the single largest grower; `growth` is
-// always measured over the APP leak window (rss at the last bucket <= endTs minus rss at the
-// first bucket >= startTs) so it lines up with the app card. `largest` marks the fallback.
-export function leakCulprits(processes, step, leak) {
-  const grow = (p) => {
-    const s = p.series.filter((x) => x.rss != null);
-    const a = s.find((x) => x.ts >= leak.startTs), b = s.findLast((x) => x.ts <= leak.endTs);
-    return a && b ? b.rss - a.rss : null;
-  };
-  const found = processLeaks(processes, step).map((l) => ({ ...l, growth: grow(processes[l.id]) }))
-    .sort((a, b) => b.growth - a.growth);
-  if (found.length) return found;
-  let best = null;
+// "Responsible process(es)" for an app leak, from that app's /api/processes series. Each
+// process gets the same least-squares fit the app card uses, over the APP leak window
+// [startTs, endTs] (present points only), so the numbers line up. Culprits pass the leak
+// thresholds (slope, R², growth, points); else the single largest fitted grower (`largest`).
+export function leakCulprits(processes, leak) {
+  const out = [];
   for (const [id, p] of Object.entries(processes)) {
-    const growth = grow(p);
-    if (growth > 0 && (!best || growth > best.growth)) {
-      best = { id, pid: p.pid, start_ts: p.start_ts, name: p.name, app: p.app, cmdline: p.cmdline, growth, largest: true };
-    }
+    const pts = p.series.filter((x) => x.rss > 0 && x.ts >= leak.startTs && x.ts <= leak.endTs);
+    if (pts.length < 2) continue;
+    const { slope, r2, hours } = fit(pts);
+    const growth = slope * hours;
+    if (growth <= 0) continue;
+    out.push({ id, pid: p.pid, start_ts: p.start_ts, name: p.name, app: p.app, cmdline: p.cmdline,
+               slopePerHour: slope, r2, growth,
+               pass: pts.length >= LEAK_MIN_POINTS && slope > LEAK_MIN_SLOPE && r2 > LEAK_MIN_R2 &&
+                     growth > LEAK_MIN_GROWTH });
   }
-  return best ? [best] : [];
+  out.sort((a, b) => b.growth - a.growth);
+  const found = out.filter((c) => c.pass);
+  const res = found.length ? found : out.slice(0, 1).map((c) => ({ ...c, largest: true }));
+  return res.map(({ pass, ...c }) => c);
 }
 
 // Strongest leak window of one series, or null.

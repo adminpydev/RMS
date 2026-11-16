@@ -66,6 +66,7 @@ test("processLeaks on demo 3d finds only the Notion renderer", async () => {
   assert.deepEqual(L.map((l) => [l.pid, l.name, l.app]), [[3121, "Notion Helper (Renderer)", "Notion"]]);
   assert.ok(L[0].slopePerHour > 100 * MB && L[0].slopePerHour < 200 * MB, `${L[0].slopePerHour / MB}`);
   assert.ok(L[0].id && L[0].cmdline);
+  assert.equal(L[0].start_ts, FROM + 34080);
 });
 
 const planted = [FROM + 14 * 3600, FROM + 2 * 86400 + 11 * 3600];
@@ -121,4 +122,7 @@ test("live() replays at 60x from 09:00 on the last day and wraps", async () => {
   t += 1; // past the end -> back to 09:00 (+ a little)
   const w = await s.live();
   assert.ok(w.ts >= a.ts && w.ts < a.ts + 120, `${w.ts - a.ts}`);
+  t = 999; // clock skew: elapsed -1 s still lands inside the replay range
+  const n = await s.live();
+  assert.ok(n.ts >= a.ts && n.ts <= meta.last_ts, `${n.ts - a.ts}`);
 });

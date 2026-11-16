@@ -4,10 +4,17 @@ const MiB = 2 ** 20, GiB = 2 ** 30;
 const MAX = 4;
 
 const size = (b) => (Math.abs(b) >= GiB ? `${(b / GiB).toFixed(1)} GB` : `${Math.round(b / MiB)} MB`);
-const clip = (s, n = 40) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+// Cut at the last space before the limit so a token (e.g. a redacted `***`) is never split.
+const clip = (v, n = 40) => {
+  const s = String(v ?? "?");
+  if (s.length <= n) return s;
+  const sp = s.lastIndexOf(" ", n - 1);
+  return `${sp > 0 ? s.slice(0, sp) : s.slice(0, n - 1)}…`;
+};
 const ref = (p) => ({ pid: p.pid, start_ts: p.start_ts, id: p.id, app: p.app });
 
-export function insights({ live, leaks = [], now = live?.ts }) {
+export function insights({ live, leaks = [], now }) {
+  now = now ?? live?.ts ?? null; // null: skip time-based rules (leak, newcomer)
   const out = [];
   const sys = live?.system, procs = live?.processes ?? [];
   if (sys) {
@@ -28,15 +35,15 @@ export function insights({ live, leaks = [], now = live?.ts }) {
     out.push({ severity: "warn", text: `${clip(p.name)} (PID ${p.pid}) grew ${size(p.growth_5m)} in the last 5 min.`,
                ...ref(p) });
   }
-  for (const l of leaks.filter((l) => l.endTs >= now - 900)) {
+  for (const l of now == null ? [] : leaks.filter((l) => l.endTs >= now - 900)) {
     const h = Math.max(1, Math.round((l.endTs - l.startTs) / 3600));
     const pid = l.pid != null ? ` (PID ${l.pid})` : "";
-    out.push({ severity: "warn", text: `${clip(l.name)} still leaking: +${size(l.slopePerHour)}/h for ${h} h${pid}.`,
+    out.push({ severity: "warn", text: `${clip(l.name)} is still leaking: +${size(l.slopePerHour)}/h for ${h} h${pid}.`,
                pid: l.pid, start_ts: l.start_ts, id: l.id, app: l.app ?? l.name });
   }
-  for (const p of procs.filter((p) => p.start_ts >= now - 600 && p.rss > 500 * MiB)) {
+  for (const p of now == null ? [] : procs.filter((p) => p.start_ts >= now - 600 && p.rss > 500 * MiB)) {
     out.push({ severity: "info",
-               text: `New process \`${clip(p.cmdline || p.name)}\` (PID ${p.pid}) using ${size(p.rss)}.`, ...ref(p) });
+               text: `New process \`${clip(p.cmdline || p.name)}\` (PID ${p.pid}) is using ${size(p.rss)}.`, ...ref(p) });
   }
   // stable sort: warnings first, rule order within a severity
   return out.sort((a, b) => (a.severity === "warn" ? 0 : 1) - (b.severity === "warn" ? 0 : 1)).slice(0, MAX);

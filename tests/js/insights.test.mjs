@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { insights } from "../../rms/web/insights.js";
+import { DemoSource } from "../../rms/web/sources.js";
+import { detectLeaks, processLeaks } from "../../rms/web/analytics.js";
 
 const MB = 2 ** 20, GB = 2 ** 30, NOW = 1800000000;
 const sys = (o = {}) => ({ total: 16 * GB, used: 8 * GB, available: 8 * GB, swap_used: 0,
@@ -40,10 +43,26 @@ test("ongoing leak", () => {
   const leak = { name: "Notion", slopePerHour: 140 * MB, r2: 0.99, growth: 420 * MB,
                  startTs: NOW - 3 * 3600, endTs: NOW - 600, pid: 2231, start_ts: NOW - 86400, id: "19" };
   const r = insights({ live: live(), leaks: [leak], now: NOW });
-  assert.equal(r[0].text, "Notion still leaking: +140 MB/h for 3 h (PID 2231).");
+  assert.equal(r[0].text, "Notion is still leaking: +140 MB/h for 3 h (PID 2231).");
   assert.equal(r[0].pid, 2231);
   assert.equal(r[0].app, "Notion");
   assert.deepEqual(insights({ live: live(), leaks: [{ ...leak, endTs: NOW - 1000 }], now: NOW }), []);
+  // empty live buffer (ts null) and no `now`: time-based rules stay silent
+  assert.deepEqual(insights({ live: { ts: null, system: null, processes: [] }, leaks: [leak] }), []);
+});
+
+test("ongoing leak from real demo leaks carries the process key", async () => {
+  const sample = JSON.parse(readFileSync(new URL("../../site/sample.json", import.meta.url)));
+  const src = new DemoSource(sample, NOW);
+  const m = await src.meta();
+  const a = await src.apps(m.first_ts, m.last_ts + 1, { top: "all" });
+  const p = await src.processes(m.first_ts, m.last_ts + 1, { app: "Notion", top: "all" });
+  const [app] = detectLeaks(a.apps, a.step), [pl] = processLeaks(p.processes, p.step);
+  assert.equal(pl.start_ts, m.first_ts + 34080);
+  const leak = { ...app, pid: pl.pid, start_ts: pl.start_ts, id: pl.id }; // enrichment done by the UI
+  const r = insights({ live: live(), leaks: [leak], now: app.endTs + 60 });
+  assert.match(r[0].text, /^Notion is still leaking: \+1\d\d MB\/h for \d h \(PID 3121\)\.$/);
+  assert.deepEqual([r[0].pid, r[0].start_ts, r[0].id, r[0].app], [3121, pl.start_ts, pl.id, "Notion"]);
 });
 
 test("big newcomer truncates long commands", () => {
@@ -51,7 +70,17 @@ test("big newcomer truncates long commands", () => {
   const r = insights({ live: live([proc({ pid: 9021, start_ts: NOW - 300, rss: 900 * MB, cmdline: cmd })]),
                       leaks: [], now: NOW });
   assert.equal(r.length, 1);
-  assert.equal(r[0].text, "New process `node server.js --port 3000 --api-key **…` (PID 9021) using 900 MB.");
+  assert.equal(r[0].text, "New process `node server.js --port 3000 --api-key…` (PID 9021) is using 900 MB.");
+  const short = insights({ live: live([proc({ pid: 9021, start_ts: NOW - 300, rss: 900 * MB, cmdline: "node server.js" })]),
+                          leaks: [], now: NOW });
+  assert.equal(short[0].text, "New process `node server.js` (PID 9021) is using 900 MB.");
+  // null cmdline and name fall back instead of throwing; no-space strings are hard-cut
+  const anon = insights({ live: live([proc({ start_ts: NOW, rss: 900 * MB, cmdline: null, name: null })]),
+                         leaks: [], now: NOW });
+  assert.match(anon[0].text, /^New process `\?`/);
+  const long = insights({ live: live([proc({ start_ts: NOW, rss: 900 * MB, cmdline: "x".repeat(60) })]),
+                         leaks: [], now: NOW });
+  assert.ok(long[0].text.includes("x".repeat(39) + "…`"));
   assert.equal(r[0].pid, 9021);
   const old = proc({ start_ts: NOW - 700, rss: 900 * MB });
   assert.deepEqual(insights({ live: live([old]), leaks: [], now: NOW }), []);

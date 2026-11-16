@@ -206,7 +206,8 @@ export class DemoSource {
   async live() {
     const { first_ts, last_ts, interval, total_ram } = this.info;
     const start = first_ts + Math.floor((last_ts - first_ts) / 86400) * 86400 + 9 * 3600;
-    const t = start + Math.floor((60 * (this.clock() - this.t0)) % (last_ts - start + interval));
+    const P = last_ts - start + interval, x = 60 * (this.clock() - this.t0);
+    const t = start + Math.floor(((x % P) + P) % P); // positive modulo: clock skew stays in range
     const ts = this.data.system.ts, sys = this.data.system;
     // ponytail: samples are regular in the shipped dataset; a binary search if gaps appear
     const at = (x) => Math.floor((x - first_ts) / interval);

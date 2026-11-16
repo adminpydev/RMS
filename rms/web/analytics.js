@@ -72,33 +72,50 @@ export function detectLeaks(apps, step) {
   const out = [];
   for (const [name, s] of Object.entries(apps)) {
     // the small-apps bucket grows as apps churn into it; an aggregate, not a leak
-    if (!s.length || name === OTHER_SMALL) continue;
-    const range = s.length * step;
-    let best = null;
-    for (const L of LEAK_WINDOWS) {
-      if (L > range) continue;
-      const k = Math.ceil(L / step);
-      const stride = Math.max(1, Math.floor(L / 4 / step));
-      const starts = [];
-      for (let i = 0; i + k <= s.length; i += stride) starts.push(i);
-      // final window ending at the last bucket, so a leak happening right now is seen
-      if (starts.at(-1) !== s.length - k) starts.push(s.length - k);
-      for (const i of starts) {
-        const win = s.slice(i, i + k);
-        const nonGap = win.filter((p) => p.rss != null);
-        const pts = nonGap.filter((p) => p.rss > 0);
-        if (pts.length < LEAK_MIN_POINTS || pts.length < LEAK_MIN_PRESENCE * nonGap.length) continue;
-        const { slope, r2, hours } = fit(pts);
-        const growth = slope * hours;
-        if (slope > LEAK_MIN_SLOPE && r2 > LEAK_MIN_R2 && growth > LEAK_MIN_GROWTH &&
-            (!best || growth > best.growth)) {
-          best = { name, slopePerHour: slope, r2, growth, startTs: pts[0].ts, endTs: pts.at(-1).ts };
-        }
-      }
-    }
-    if (best) out.push(best);
+    if (name === OTHER_SMALL) continue;
+    const best = leakOf(s, step);
+    if (best) out.push({ name, ...best });
   }
   return out;
+}
+
+// Same detector over /api/processes series: [{id, pid, name, app, cmdline, slopePerHour, ...}].
+export function processLeaks(processes, step) {
+  const out = [];
+  for (const [id, p] of Object.entries(processes)) {
+    const best = leakOf(p.series, step);
+    if (best) out.push({ id, pid: p.pid, name: p.name, app: p.app, cmdline: p.cmdline, ...best });
+  }
+  return out;
+}
+
+// Strongest leak window of one series, or null.
+function leakOf(s, step) {
+  if (!s.length) return null;
+  const range = s.length * step;
+  let best = null;
+  for (const L of LEAK_WINDOWS) {
+    if (L > range) continue;
+    const k = Math.ceil(L / step);
+    const stride = Math.max(1, Math.floor(L / 4 / step));
+    const starts = [];
+    for (let i = 0; i + k <= s.length; i += stride) starts.push(i);
+    // final window ending at the last bucket, so a leak happening right now is seen
+    if (starts.at(-1) !== s.length - k) starts.push(s.length - k);
+    for (const i of starts) {
+      const win = s.slice(i, i + k);
+      const nonGap = win.filter((p) => p.rss != null);
+      const pts = nonGap.filter((p) => p.rss > 0);
+      if (pts.length < LEAK_MIN_POINTS || pts.length < LEAK_MIN_PRESENCE * nonGap.length) continue;
+      const { slope, r2, hours } = fit(pts);
+      const growth = slope * hours;
+      if (slope > LEAK_MIN_SLOPE && r2 > LEAK_MIN_R2 && growth > LEAK_MIN_GROWTH &&
+          (!best || growth > best.growth)) {
+        best = { slopePerHour: slope, r2, growth, startTs: pts[0].ts, endTs: pts.at(-1).ts };
+      }
+    }
+  }
+  return best;
 }
 
 // A spike starts when used_max rises > SPIKE_RISE_FRAC*totalRam within the window, or
@@ -152,18 +169,32 @@ export const spikeWindow = (spike) => ({ from: spike.startTs - EXPLAIN_WINDOW, t
 // Which apps grew over the whole detected rise, [startTs - EXPLAIN_WINDOW, peakEnd),
 // ranked by growth, not size. At coarse steps a fixed window before the peak misses the ramp.
 export function explainSpike(apps, spike) {
-  const from = spike.startTs - EXPLAIN_WINDOW, end = spike.peakEnd;
   const out = [];
   for (const [name, s] of Object.entries(apps)) {
     if (name === OTHER_SMALL) continue;
-    const live = s.filter((p) => p.rss != null);
-    const a = live.find((p) => p.ts >= from);
-    const b = live.findLast((p) => p.ts < end);
-    if (!a || !b) continue;
-    const growth = b.rss - a.rss;
+    const growth = spikeGrowth(s, spike);
     if (growth > 0) out.push({ name, growth });
   }
   return out.sort((x, y) => y.growth - x.growth);
+}
+
+// Same growth rule over /api/processes series (fetched over spikeWindow(spike)).
+export function spikeProcesses(processes, spike) {
+  const out = [];
+  for (const [id, p] of Object.entries(processes)) {
+    const growth = spikeGrowth(p.series, spike);
+    if (growth > 0) out.push({ id, pid: p.pid, name: p.name, app: p.app, cmdline: p.cmdline, growth });
+  }
+  return out.sort((x, y) => y.growth - x.growth);
+}
+
+// rss(last point before peakEnd) - rss(first point at/after startTs - EXPLAIN_WINDOW); null if none.
+function spikeGrowth(s, spike) {
+  const from = spike.startTs - EXPLAIN_WINDOW, end = spike.peakEnd;
+  const live = s.filter((p) => p.rss != null);
+  const a = live.find((p) => p.ts >= from);
+  const b = live.findLast((p) => p.ts < end);
+  return a && b ? b.rss - a.rss : null;
 }
 
 // Local day-of-week (0=Sun) x hour average `used`; null under 2 days of data.

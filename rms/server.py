@@ -5,8 +5,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .store import pick_step
-
 
 _TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
           ".css": "text/css; charset=utf-8", ".json": "application/json", ".svg": "image/svg+xml"}
@@ -16,28 +14,18 @@ class _Bad(Exception):
     pass
 
 
-def _int(q, key, required=False):
+def _int(q, key):
     v = q.get(key, [None])[-1]
     if v is None:
-        if required:
-            raise _Bad(f"missing {key}")
-        return None
+        raise _Bad(f"missing {key}")
     if len(v) > 20 or not re.fullmatch(r"-?[0-9]+", v) or abs(int(v)) >= 2 ** 62:
         raise _Bad(f"{key} must be an integer")
     return int(v)
 
 
-def _id(s):
-    if len(s) > 20 or not re.fullmatch(r"-?[0-9]+", s) or not 0 < int(s) < 2 ** 62:
-        raise _Bad("id must be a positive integer")
-    return int(s)
-
-
-def make_server(store, port, meta, web_dir, recent=None, sampler=None, proc_ids=None):
+def make_server(port, meta, web_dir, recent, sampler):
     web = Path(web_dir).resolve()
-    if recent is not None:
-        meta = {**meta, "features": ["processes", "live"]}
-    interval = meta["interval"]
+    meta = {**meta, "mode": "live", "features": ["live"]}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -54,28 +42,6 @@ def make_server(store, port, meta, web_dir, recent=None, sampler=None, proc_ids=
 
         def _json(self, code, obj):
             self._send(code, json.dumps(obj).encode(), "application/json", api=True)
-
-        def _range(self, q):
-            frm, to = _int(q, "from", True), _int(q, "to", True)
-            if frm >= to:
-                raise _Bad("from must be < to")
-            step = _int(q, "step")
-            if step is None:
-                return frm, to, pick_step(frm, to, interval)
-            if step <= 0:
-                raise _Bad("step must be > 0")
-            step = max(step, interval, -(-(to - frm) // 5000))
-            return frm, to, -(-step // interval) * interval
-
-        def _top(self, q, default):
-            if q.get("top", [None])[-1] == "all":
-                return None
-            top = _int(q, "top")
-            if top is None:
-                return default
-            if top <= 0:
-                raise _Bad("top must be > 0")
-            return top
 
         def do_GET(self):
             port = self.server.server_address[1]
@@ -97,43 +63,18 @@ def make_server(store, port, meta, web_dir, recent=None, sampler=None, proc_ids=
 
         def _api(self, path, q):
             if path == "/api/meta":
-                st = store.stats()
-                return self._json(200, {**meta, "mode": "live",
-                                        "first_ts": st["first_ts"], "last_ts": st["last_ts"]})
-            if path == "/api/system":
-                # `to` is exclusive and passed through unchanged; live clients send now+1.
-                frm, to, step = self._range(q)
-                return self._json(200, {"step": step, "points": store.query_system(frm, to, step)})
-            if path == "/api/apps":
-                frm, to, step = self._range(q)
-                top = self._top(q, 15)
-                return self._json(200, {"step": step, "apps": store.query_apps(frm, to, step, top)})
-            if path == "/api/processes":
-                frm, to, step = self._range(q)
-                app = q.get("app", [None])[-1]
-                if app is not None and len(app) > 200:
-                    raise _Bad("app too long")
-                top = self._top(q, 25)
-                return self._json(200, {"step": step, "processes":
-                                        store.query_processes(frm, to, step, app, top)})
-            m = re.fullmatch(r"/api/process/([^/]+)", path)
-            if m:
-                pid = _id(m.group(1))
-                frm, to, step = self._range(q)
-                d = store.get_process(pid, frm, to, step)
-                if d is None:
-                    return self._json(404, {"error": "not found"})
-                par = d["parent"]
-                if par and par["id"] is None and recent is not None:
-                    par["name"] = recent.name_of(par["pid"], d["start_ts"])
-                return self._json(200, d)
-            if path == "/api/live" and recent is not None:
-                if q.get("fast", [None])[-1] == "1" and sampler is not None:
+                return self._json(200, meta)
+            if path == "/api/live":
+                if q.get("fast", [None])[-1] == "1":
                     sampler.poke()
-                d = recent.snapshot(dict(proc_ids()) if proc_ids else {})
-                if d["ts"] is None:
-                    d = {**d, "resolution": None}
-                return self._json(200, d)
+                return self._json(200, recent.snapshot())
+            if path == "/api/process":
+                pid, start_ts = _int(q, "pid"), _int(q, "start_ts")
+                if pid < 0 or start_ts < 0:
+                    raise _Bad("pid and start_ts must be >= 0")
+                d = recent.process(pid, start_ts)
+                if d is not None:
+                    return self._json(200, d)
             self._json(404, {"error": "not found"})
 
         def _static(self, path):

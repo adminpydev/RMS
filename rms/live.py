@@ -50,7 +50,6 @@ class Recent:
         self.entries = []
         self.meta = {}     # key -> {pid, ppid, start_ts, name, app[, user, cmdline]}
         self._procs = {}   # key -> psutil.Process, for lazy user/cmdline reads
-        self._last = {}    # key -> ts last seen in an entry
         self._lock = threading.Lock()
 
     def push(self, ts, system, procs_full):
@@ -64,7 +63,6 @@ class Recent:
                 if k not in self.meta:
                     self.meta[k] = {f: v[f] for f in _BASE}
                     self._procs[k] = v["proc"]
-                self._last[k] = max(ts, self._last.get(k, ts))
             now = self.entries[-1][0]
             cut = now - self.window
             # every entry for the last 60 s; newest per 20 s bucket to 10 min; per 60 s beyond
@@ -81,8 +79,11 @@ class Recent:
                     seen.add(b)
                 keep.append(e)
             self.entries = keep[::-1]
-            for k in [k for k, t in self._last.items() if t < cut]:
-                del self._last[k], self.meta[k], self._procs[k]
+            # meta lives exactly as long as the key is in some retained entry
+            # ponytail: O(entries x procs) union per push (~80 x ~500); fine at 2 s cadence
+            present = set().union(*(e[2] for e in self.entries))
+            for k in [k for k in self.meta if k not in present]:
+                del self.meta[k], self._procs[k]
 
     @staticmethod
     def _parent(meta, alive, ppid, start_ts):
@@ -91,18 +92,10 @@ class Recent:
                 if k in meta and k[0] == ppid and k[1] <= start_ts]
         return max(cand, key=lambda m: m["start_ts"]) if cand else None
 
-    def name_of(self, pid, before_start_ts):
-        """Name of the live process `pid` (newest buffer entry) started at or before the cutoff."""
-        with self._lock:
-            if not self.entries:
-                return None
-            m = self._parent(self.meta, self.entries[-1][2], pid, before_start_ts)
-        return m["name"] if m else None
-
     def fill_meta(self, proc):
         cmd = _read(proc.cmdline)
         return {"user": _read(proc.username),
-                "cmdline": redact(" ".join(cmd))[:2000] if cmd is not None else None}  # cap like store
+                "cmdline": redact(" ".join(cmd))[:2000] if cmd is not None else None}  # cap 2000
 
     def _fill(self, keys):
         """Read user/cmdline once per key (outside the lock: slow syscalls); return meta copies."""
@@ -116,10 +109,10 @@ class Recent:
                     self.meta[k].update(m)
             return {k: dict(self.meta.get(k) or {"user": None, "cmdline": None}) for k in keys}
 
-    def snapshot(self, _ids=None):  # ponytail: _ids ignored, shim until Task 2 drops callers' arg
+    def snapshot(self):
         with self._lock:
             if not self.entries:
-                return {"ts": None, "resolution": 10, "simulated": False, "system": None,
+                return {"ts": None, "resolution": None, "simulated": False, "system": None,
                         "processes": []}
             entries = list(self.entries)
         ts, system, procs = entries[-1]
@@ -169,21 +162,23 @@ class Recent:
         with self._lock:
             if key not in self.meta:
                 return None
+            base = dict(self.meta[key])  # copy now: a concurrent push may prune it
             series = [{"ts": e[0], "rss": e[2][key][0], "cpu": e[2][key][1]}
                       for e in self.entries if key in e[2]]
             alive = self.entries[-1][2]
-            par = self._parent(self.meta, alive, self.meta[key]["ppid"], start_ts)
+            par = self._parent(self.meta, alive, base["ppid"], start_ts)
             kids = sorted((k for k in alive if k != key and k in self.meta
                            and self.meta[k]["ppid"] == pid and k[1] >= start_ts),
                           key=lambda k: (k[1], k[0]))
             children = [{"pid": k[0], "start_ts": k[1], "name": self.meta[k]["name"]}
                         for k in kids]
             parent = ({"pid": par["pid"], "name": par["name"]}
-                      if par and par is not self.meta[key] else None)
+                      if par and (par["pid"], par["start_ts"]) != key else None)
         if not series:
             return None
+        # an exited process never filled while alive keeps user/cmdline None (intended)
         m = self._fill([key])[key]
-        return {**{f: m.get(f) for f in _BASE}, "user": m.get("user"),
+        return {**{f: base[f] for f in _BASE}, "user": m.get("user"),
                 "cmdline": m.get("cmdline"), "alive": key in alive,
                 "parent": parent, "children": children, "series": series}
 

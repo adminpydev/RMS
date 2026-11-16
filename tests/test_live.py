@@ -154,7 +154,7 @@ def test_recent_out_of_order_push():
 
 
 def test_empty_snapshot():
-    assert Recent().snapshot() == {"ts": None, "resolution": 10, "simulated": False,
+    assert Recent().snapshot() == {"ts": None, "resolution": None, "simulated": False,
                                    "system": None, "processes": []}
 
 
@@ -256,17 +256,10 @@ def test_live_sampler_idles():
     assert C.calls == 8  # 20, 22, 24 s (< 15 s after poke at 10), then idle
 
 
-def test_name_of_alive_only_and_start_ts():
-    # ponytail: name_of stays until Task 2 moves /api/process onto Recent.process
+def test_meta_pruned_with_entries():
     r = Recent()
-    def p(pid, st, name):
-        return {"rss": 1, "cpu": 0, "threads": 1, "pid": pid, "ppid": 1, "start_ts": st,
-                "name": name, "app": name, "proc": None}
-    S = {"total": 1, "used": 1, "available": 1, "swap_used": 0, "pressure": 1}
-    r.push(1000, S, {(7, 50): p(7, 50, "dead"), (8, 60): p(8, 60, "other")})
-    r.push(1002, S, {(7, 500): p(7, 500, "reused"), (8, 60): p(8, 60, "other")})
-    assert r.name_of(8, 100) == "other"
-    assert r.name_of(7, 100) is None      # old pid 7 dead; reused one started later
-    assert r.name_of(7, 600) == "reused"
-    assert r.name_of(9, 100) is None
-    assert Recent().name_of(1, 1) is None
+    push(r, 0, {(1, 1): 5, (2, 2): 5})
+    push(r, 5, {(2, 2): 5})
+    push(r, 100, {(2, 2): 5})  # ts 0 thinned (same 20 s bucket as 5): (1, 1) in no entry
+    assert set(r.meta) == set(r._procs) == {(2, 2)}
+    assert r.process(1, 1) is None

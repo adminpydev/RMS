@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from rms.redact import redact
@@ -52,6 +54,22 @@ CASES = [
     ("x AKIAABCDEFGHIJKLMNOP", "x ***"),
     ("x eyJhbGc.eyJzdWI.sig_-1", "x ***"),
     ("mysql -psecret", "mysql -psecret"),  # attached short flag: ambiguous, left alone
+    ("x --pwd=a", "x --pwd=***"),
+    ("x --credential a", "x --credential ***"),
+    ("x --session=a", "x --session=***"),
+    ("x --password -hunter2", "x --password ***"),
+    ("x --token -abc123 y", "x --token *** y"),
+    ("--no-auth --port 3000", "--no-auth --port 3000"),
+    ("curl -d '{\"password\":\"x\"}' u", "curl -d '{\"password\":\"***\"}' u"),
+    ("curl -d '{\"password\": \"x y\", \"a\": 1}' u", "curl -d '{\"password\": \"***\", \"a\": 1}' u"),
+    ('curl -H "Cookie: sid=abc; b=c" u', 'curl -H "Cookie: ***" u'),
+    ("curl --cookie 'sid=abc' u", "curl --cookie *** u"),
+    ("curl -b sid=abc u", "curl -b *** u"),
+    ('curl --data-urlencode "password=x" u', 'curl --data-urlencode "password=***" u'),
+    ('--password="x"y z', "--password=*** z"),
+    ('--api-key="a b"c z', "--api-key=*** z"),
+    ("--disk-cache-size-limit-bytes=5", "--disk-cache-size-limit-bytes=5"),
+    ("x --disk-cache-size-limit-bytes 5", "x --disk-cache-size-limit-bytes 5"),
     (CHROME, CHROME),
     ("python3 -m http.server 8000", "python3 -m http.server 8000"),
     ("node server.js --port 3000", "node server.js --port 3000"),
@@ -70,3 +88,34 @@ def test_none():
 def test_idempotent():
     s = redact("--password=x TOKEN=y postgres://a:b@h")
     assert redact(s) == s
+
+
+@pytest.mark.parametrize("src,want", CASES)
+def test_idempotent_table(src, want):
+    assert redact(want) == want
+
+
+def test_perf_adversarial():
+    inputs = [
+        "a" * 100000 + "pass",
+        "x://" * 25000,
+        "eyJ" + "a." * 50000,
+        "--a" * 30000,
+        "=" * 50000,
+        "a:" * 30000 + "@",
+        ".-" * 50000 + "x",
+        "@" + "x://" * 25000,
+        "pass" * 25000,
+    ]
+    total = 0.0
+    for s in inputs:
+        t = time.perf_counter()
+        redact(s)
+        dt = time.perf_counter() - t
+        assert dt < 0.1, (s[:12], dt)
+        total += dt
+    assert total < 1.0
+
+
+def test_input_capped():
+    assert len(redact("a " * 50000)) <= 16384

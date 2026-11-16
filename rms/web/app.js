@@ -1,12 +1,18 @@
-// RMS dashboard. One module, one render function per section. Data comes from
+// RMS dashboard orchestrator: Overview sections, tabs and the /api/live poll. Data comes from
 // LiveSource (local server) or DemoSource (sample.json); analytics are pure functions.
+// live.js, process.js and insights-ui.js import the shared helpers exported here.
 import uPlot from "./vendor/uPlot.esm.js";
-import { loadSource, LiveSource } from "./sources.js";
-import { stackLayers, topApps, detectLeaks, detectSpikes, spikeWindow, explainSpike, heatmap } from "./analytics.js";
+import { loadSource, LiveSource, OTHER_SMALL } from "./sources.js";
+import { stackLayers, topApps, detectLeaks, processLeaks, detectSpikes, spikeWindow, explainSpike,
+         spikeProcesses, heatmap } from "./analytics.js";
+import { insights } from "./insights.js";
+import { renderTree, procLink, shortCmd, bindProcess } from "./process.js";
+import { setLive, liveError, renderLive, tickLive, isPaused, bindLive } from "./live.js";
+import { renderInsights, bindInsights } from "./insights-ui.js";
 
 const $ = (s) => document.querySelector(s);
 const GiB = 2 ** 30, MiB = 2 ** 20;
-const PRESETS = { "1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400 };
+const PRESETS = { "1h": 3600, "6h": 6 * 3600, "24h": 86400, "3d": 3 * 86400, "7d": 7 * 86400 };
 const TOP_N = 15;
 const MAX_SPIKES = 12; // ponytail: caps per-spike apps fetches; paginate if ranges get busier
 const RSS_NOTE = "App memory uses RSS, which counts shared memory more than once.";
@@ -15,7 +21,10 @@ const BROKEN = "Something went wrong rendering this view.";
 const OS = { darwin: "macOS", linux: "Linux", win32: "Windows" };
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-let src, meta, view = null, timer = null, gen = 0, selectedApp = null;
+export let src;
+let meta, view = null, timer = null, gen = 0, selectedApp = null;
+let tab = "overview", liveTimer = null, liveGen = 0, ticker = null;
+const has = (f) => meta?.features?.includes(f) ?? false;
 let hist = null, histAt = 0; // daily-pattern history, refetched at most hourly
 const HIST_TTL = 3600;
 let range = { preset: "24h" }; // or { from, to } for custom / zoomed ranges
@@ -23,11 +32,11 @@ const charts = new Map(); // container element -> uPlot
 
 // ---------- formatting ----------
 
-const fmtBytes = (b) => (b == null ? "–" : Math.abs(b) >= GiB ? `${(b / GiB).toFixed(1)} GiB` : `${(b / MiB).toFixed(1)} MiB`);
+export const fmtBytes = (b) => (b == null ? "–" : Math.abs(b) >= GiB ? `${(b / GiB).toFixed(1)} GiB` : `${(b / MiB).toFixed(1)} MiB`);
 const plus = (b) => `+${fmtBytes(b)}`;
-const fmtTime = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+export const fmtTime = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+export const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+export const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const pad = (n) => String(n).padStart(2, "0");
 function toInput(ts) {
   const d = new Date(ts * 1000);
@@ -39,7 +48,7 @@ function toInput(ts) {
 const isLive = () => src instanceof LiveSource;
 // Demo data ends at/before now (whole-day anchoring), so demo ranges end at the data's end.
 const end = () => (isLive() ? Math.floor(Date.now() / 1000) + 1 : meta.last_ts + meta.interval);
-function span() {
+export function span() {
   if (range.preset) {
     const e = end(), f = e - PRESETS[range.preset];
     return [meta.first_ts ? Math.max(f, meta.first_ts - meta.interval) : f, e]; // short history -> fine step
@@ -51,6 +60,7 @@ function setRange(r) { range = r; refresh(); }
 
 function schedule(always = false) {
   clearTimeout(timer);
+  if (tab === "live") return; // Overview resumes with a refresh when its tab is shown again
   if (isLive() && (always || range.preset)) timer = setTimeout(refresh, (meta?.interval ?? 10) * 1000);
 }
 
@@ -83,20 +93,28 @@ async function refresh() {
     const stale = !hist || now - histAt > HIST_TTL;
     // ponytail: top=all apps query costs ~0.5 s CPU per poll on a 7d range; skip polling when step >= 600 s, or add rollups
     const sys = await net(src.system(from, to));
-    const [apps, h] = await Promise.all([
+    const procs = has("processes"), treeApp = procs && selectedApp !== OTHER_SMALL ? selectedApp : null;
+    const [apps, h, tree] = await Promise.all([
       net(src.apps(from, to, { step: sys.step, top: "all" })),
       // daily pattern uses all history, not just the range
       stale ? net(src.system(meta.first_ts, end())) : hist,
+      treeApp ? net(src.processes(from, to, { step: sys.step, app: treeApp, top: "all" })) : null,
     ]);
     if (stale) { hist = h; histAt = now; }
     const spikes = detectSpikes(sys.points, meta.total_ram, sys.step).slice(-MAX_SPIKES);
-    const causes = await Promise.all(spikes.map(async (s) => {
-      const w = spikeWindow(s);
-      const a = await net(src.apps(w.from, w.to, { step: meta.interval, top: "all" }));
-      return explainSpike(a.apps, s).slice(0, 5);
-    }));
+    const leaks = detectLeaks(apps.apps, sys.step).sort((a, b) => b.growth - a.growth);
+    const [causes, culprits] = await Promise.all([
+      Promise.all(spikes.map(async (s) => {
+        const w = spikeWindow(s);
+        if (procs) return spikeProcesses((await net(src.processes(w.from, w.to, { step: meta.interval, top: "all" }))).processes, s).slice(0, 5);
+        return explainSpike((await net(src.apps(w.from, w.to, { step: meta.interval, top: "all" }))).apps, s).slice(0, 5);
+      })),
+      Promise.all(leaks.map((l) => (procs && l.name !== OTHER_SMALL ? leakCulprits(l, sys.step) : []))),
+    ]);
     if (my !== gen) return;
     view = { from, to, step: sys.step, points: sys.points, apps: apps.apps,
+             tree: treeApp ? { app: treeApp, ps: tree.processes } : null,
+             leaks: leaks.map((l, i) => ({ ...l, culprits: culprits[i] })),
              spikes: spikes.map((s, i) => ({ ...s, causes: causes[i] })), heat: heatmap(hist.points) };
     setStatus(null);
     render();
@@ -107,6 +125,20 @@ async function refresh() {
     setStatus(!e.net ? BROKEN : isLive() ? LOST : `Could not load data: ${e.message}`, true);
     schedule(true);
   }
+}
+
+// Processes of a leaking app that leak themselves over the leak window; else its largest grower.
+async function leakCulprits(l, step) {
+  const r = await net(src.processes(l.startTs, l.endTs + step, { step, app: l.name, top: "all" }));
+  const found = processLeaks(r.processes, r.step).sort((a, b) => b.growth - a.growth);
+  if (found.length) return found;
+  let best = null;
+  for (const [id, p] of Object.entries(r.processes)) {
+    const s = p.series.filter((x) => x.rss != null);
+    const growth = s.length ? s.at(-1).rss - s[0].rss : 0;
+    if (growth > 0 && (!best || growth > best.growth)) best = { id, ...p, growth, largest: true };
+  }
+  return best ? [best] : [];
 }
 
 // ---------- charts ----------
@@ -121,7 +153,7 @@ function zoomFromSelect(u) {
   if (to - from >= 60) setRange({ from, to });
 }
 
-function opts(height, series, { yMax, hooks = {} } = {}) {
+export function opts(height, series, { yMax, hooks = {} } = {}) {
   const axis = { stroke: css("--muted"), font: `11px ${css("--mono")}`,
                  grid: { stroke: css("--grid"), width: 1 }, ticks: { stroke: css("--grid"), width: 1 } };
   return {
@@ -135,7 +167,7 @@ function opts(height, series, { yMax, hooks = {} } = {}) {
 }
 
 // Reuse the chart when its shape is unchanged (keeps hover state across polls).
-function chart(el, key, o, data) {
+export function chart(el, key, o, data) {
   const c = charts.get(el);
   if (c && c.key === key) { c.u.setData(data); return c.u; }
   c?.u.destroy();
@@ -145,7 +177,7 @@ function chart(el, key, o, data) {
   return u;
 }
 
-function dropCharts(inside) {
+export function dropCharts(inside) {
   for (const [el, c] of charts) {
     if (inside && !inside.contains(el)) continue;
     c.u.destroy();
@@ -161,9 +193,9 @@ const ro = new ResizeObserver((entries) => {
   }
 });
 
-const line = (label, color, extra = {}) => ({ label, stroke: css(color), width: 1.5, value: (u, v) => fmtBytes(v), ...extra });
+export const line = (label, color, extra = {}) => ({ label, stroke: css(color), width: 1.5, value: (u, v) => fmtBytes(v), ...extra });
 
-function rssChart(el, s, height) {
+export function rssChart(el, s, height) {
   return chart(el, "rss", opts(height, [
     line("RSS avg", "--apps", { fill: css("--apps-fill") }),
     line("RSS peak", "--other", { width: 1, dash: [3, 3] }),
@@ -245,7 +277,7 @@ function alignPressure(u) {
   el.style.width = `${u.bbox.width / dpr}px`;
 }
 
-function spark(values) {
+export function spark(values) {
   const live = values.filter((x) => x != null);
   if (!live.length) return "";
   const lo = Math.min(...live), hi = Math.max(...live), n = Math.max(1, values.length - 1);
@@ -264,7 +296,9 @@ function renderApps(v) {
   if (selectedApp && !v.apps[selectedApp]) selectedApp = null;
   const focused = document.activeElement?.closest?.("#apps-body tr")?.dataset.app; // survive the poll rebuild
   $("#apps-body").innerHTML = rows.length
-    ? rows.map((r) => `<tr tabindex="0" data-app="${esc(r.name)}" aria-controls="app-detail" aria-expanded="${r.name === selectedApp}">
+    ? rows.map((r) => (has("processes") && r.name === OTHER_SMALL
+      ? `<tr class="flat" title="Small apps aren't broken down by process">`
+      : `<tr tabindex="0" data-app="${esc(r.name)}" aria-controls="app-detail" aria-expanded="${r.name === selectedApp}">`) + `
         <th scope="row" title="${esc(r.name)}">${esc(r.name)}</th>
         <td class="num">${fmtBytes(r.avg)}</td><td class="num">${fmtBytes(r.peak)}</td>
         <td class="num procs">${r.procs}</td><td>${spark(r.spark)}</td></tr>`).join("")
@@ -280,23 +314,40 @@ function renderAppDetail(v) {
   $("#app-title").textContent = selectedApp;
   el.setAttribute("aria-label", `Memory used by ${selectedApp} over the selected range`);
   rssChart(el, v.apps[selectedApp], 200);
+  const tree = $("#app-tree");
+  tree.hidden = !has("processes");
+  if (tree.hidden) return;
+  if (v.tree?.app === selectedApp) renderTree(tree, v.tree.ps);
+  else tree.innerHTML = `<p class="empty">Loading processes…</p>`;
 }
 
-function selectRow(tr) {
+async function selectRow(tr) {
   if (!tr?.dataset.app) return;
   selectedApp = selectedApp === tr.dataset.app ? null : tr.dataset.app;
   renderApps(view);
+  const app = selectedApp, v = view;
+  if (!app || !has("processes") || v.tree?.app === app) return;
+  try {
+    const r = await net(src.processes(v.from, v.to, { step: v.step, app, top: "all" }));
+    if (selectedApp !== app) return; // another click won
+    if (view.tree?.app !== app) view.tree = { app, ps: r.processes };
+    renderAppDetail(view);
+  } catch (e) {
+    console.error(e);
+    if (selectedApp === app) $("#app-tree").innerHTML = `<p class="empty">Could not load processes.</p>`;
+  }
 }
 
 function renderLeaks(v) {
   const box = $("#leaks");
   dropCharts(box);
-  const leaks = detectLeaks(v.apps, v.step).sort((a, b) => b.growth - a.growth);
+  const leaks = v.leaks;
   if (!leaks.length) return empty(box, "No leaks detected in this range.");
   box.innerHTML = leaks.map((l, i) => `<article class="card">
       <h3>${esc(l.name)}</h3>
       <div class="stat">${plus(l.slopePerHour)}/h</div>
       <p class="meta">${plus(l.growth)} from ${fmtTime(l.startTs)} to ${fmtTime(l.endTs)} · fit R² <span class="mono">${l.r2.toFixed(2)}</span></p>
+      ${l.culprits.length ? `<h4>Responsible process(es)</h4><ol>${l.culprits.map((c) => `<li><span>${procLink(c, `PID ${c.pid} ${shortCmd(c)}`)}${c.largest ? ` <span class="muted">largest grower</span>` : ""}</span><span class="num">${plus(c.growth)}</span></li>`).join("")}</ol>` : ""}
       <div class="chart" data-leak="${i}" role="figure" aria-label="Memory used by ${esc(l.name)} over the selected range"></div>
     </article>`).join("");
   leaks.forEach((l, i) => rssChart(box.querySelector(`[data-leak="${i}"]`), v.apps[l.name], 140));
@@ -310,8 +361,10 @@ function renderSpikes(v) {
       <div class="stat">${s.reason === "pressure" && s.rise <= 0 ? "Memory pressure" : plus(s.rise)}</div>
       <p class="meta">${s.reason === "pressure" ? "Memory pressure left normal" : "Used memory rose fast"}</p>
       ${s.causes.length
-        ? `<ol aria-label="Top causes">${s.causes.map((c) => `<li><span>${esc(c.name)}</span><span class="num">${plus(c.growth)}</span></li>`).join("")}</ol>`
-        : `<p class="empty">No single app grew. Likely system memory.</p>`}
+        ? `<ol aria-label="Top causes">${s.causes.map((c) => `<li><span>${c.pid != null
+            ? `${procLink(c, `PID ${c.pid} ${shortCmd(c)}`)} <span class="muted">· ${esc(c.app ?? "?")}</span>`
+            : esc(c.name)}</span><span class="num">${plus(c.growth)}</span></li>`).join("")}</ol>`
+        : `<p class="empty">No single ${has("processes") ? "process" : "app"} grew. Likely system memory.</p>`}
     </article>`).join("");
 }
 
@@ -342,6 +395,57 @@ function render() {
   renderPattern(view);
 }
 
+// ---------- tabs + live poll ----------
+
+function showTab(t, focus = false) {
+  if (t === "live" && !has("live")) t = "overview";
+  const changed = t !== tab;
+  tab = t;
+  for (const name of ["overview", "live"]) {
+    const b = $(`#tab-${name}`), on = name === t;
+    b.setAttribute("aria-selected", String(on));
+    b.tabIndex = on ? 0 : -1;
+    $(`#${name}`).hidden = !on;
+  }
+  if (focus) $(`#tab-${t}`).focus();
+  const hash = t === "live" ? "#live" : "";
+  if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname + location.search);
+  clearInterval(ticker);
+  if (t === "live") { renderLive(); ticker = setInterval(tickLive, 1000); }
+  if (changed) {
+    if (t === "overview" && view) refresh(); // Overview stops polling while hidden
+    poll();
+  }
+}
+
+// One /api/live poll feeds both the insights strip and the Live table: 2 s (fast) while the
+// Live tab is shown and not paused, else 10 s for insights only. Nothing while the page is hidden.
+async function poll() {
+  clearTimeout(liveTimer);
+  const my = ++liveGen;
+  if (!has("live") || document.visibilityState !== "visible") return;
+  const fast = tab === "live" && !isPaused();
+  try {
+    const d = await src.live({ fast });
+    if (my !== liveGen) return;
+    renderInsights(insights({ live: d, leaks: insightLeaks() }), d);
+    if (fast) setLive(d);
+  } catch (e) {
+    if (my !== liveGen) return;
+    console.error(e);
+    if (fast) liveError(LOST);
+  }
+  liveTimer = setTimeout(poll, fast ? 2000 : 10000);
+}
+
+// Current-range app leaks, tagged with their top responsible process for the insight link.
+function insightLeaks() {
+  return (view?.leaks ?? []).map((l) => {
+    const c = l.culprits[0];
+    return c ? { ...l, pid: c.pid, start_ts: c.start_ts, id: c.id, app: l.name } : l;
+  });
+}
+
 // ---------- wiring ----------
 
 function bind() {
@@ -350,6 +454,20 @@ function bind() {
     const from = new Date($("#from").value).getTime() / 1000, to = new Date($("#to").value).getTime() / 1000;
     if (from < to) setRange({ from: Math.floor(from), to: Math.floor(to) });
   };
+  document.querySelectorAll("[role=tab]").forEach((b) => {
+    b.addEventListener("click", () => showTab(b.id.slice(4)));
+    b.addEventListener("keydown", (e) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      e.preventDefault();
+      const t = e.key === "Home" ? "overview" : e.key === "End" ? "live" : tab === "live" ? "overview" : "live";
+      showTab(t, true);
+    });
+  });
+  addEventListener("hashchange", () => showTab(location.hash === "#live" ? "live" : "overview"));
+  document.addEventListener("visibilitychange", poll);
+  bindLive(poll);
+  bindInsights();
+  bindProcess();
   $("#from").addEventListener("change", onCustom);
   $("#to").addEventListener("change", onCustom);
   const body = $("#apps-body");
@@ -377,6 +495,11 @@ async function init() {
     return setStatus(`Could not load data: ${e.message}`, true);
   }
   setStatus(null);
+  meta = await src.meta().catch(() => null);
+  if (!isLive()) range = { preset: "3d" }; // the demo's planted events span its 3 days
+  $("#tabs").hidden = !has("live");
+  showTab(location.hash === "#live" ? "live" : "overview");
+  poll();
   refresh();
 }
 

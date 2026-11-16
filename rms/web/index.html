@@ -22,11 +22,20 @@
 
   <p id="banner" class="banner" hidden>Sample data. <a href="https://github.com/adminpydev/RMS#install">Install RMS</a> to see your own machine.</p>
 
+  <section id="insights" class="insights" aria-label="Insights" aria-live="polite" hidden></section>
+
+  <div id="tabs" class="tabs" role="tablist" aria-label="View" hidden>
+    <button type="button" role="tab" id="tab-overview" aria-controls="overview" aria-selected="true">Overview</button>
+    <button type="button" role="tab" id="tab-live" aria-controls="live" aria-selected="false" tabindex="-1">Live</button>
+  </div>
+
+  <div id="overview" role="tabpanel" aria-labelledby="tab-overview">
   <nav class="range" aria-label="Time range">
     <div class="presets" role="group" aria-label="Preset ranges">
       <button type="button" data-range="1h">1h</button>
       <button type="button" data-range="6h">6h</button>
       <button type="button" data-range="24h">24h</button>
+      <button type="button" data-range="3d">3d</button>
       <button type="button" data-range="7d">7d</button>
     </div>
     <div class="custom">
@@ -63,6 +72,7 @@
       <div id="app-detail" class="detail" hidden>
         <h3 id="app-title"></h3>
         <div id="app-chart" class="chart" role="figure"></div>
+        <div id="app-tree" class="tree-box" hidden></div>
       </div>
     </section>
 
@@ -81,6 +91,42 @@
       <div id="heat"></div>
     </section>
   </main>
+  </div>
+
+  <section id="live" class="panel live" role="tabpanel" aria-labelledby="tab-live" hidden>
+    <div class="live-bar">
+      <label class="search"><span class="sr">Search processes</span><input type="search" id="live-search" placeholder="Search name, command, app or PID" autocomplete="off"></label>
+      <button type="button" id="live-pause" class="btn" aria-pressed="false">Pause</button>
+      <p id="live-meta" class="live-meta" role="status"></p>
+    </div>
+    <div class="table-wrap live-wrap">
+      <table class="apps" id="live-table">
+        <thead><tr>
+          <th scope="col" class="num" data-sort="pid"><button type="button">PID</button></th>
+          <th scope="col" data-sort="name"><button type="button">Process</button></th>
+          <th scope="col" data-sort="app"><button type="button">App</button></th>
+          <th scope="col" data-sort="user"><button type="button">User</button></th>
+          <th scope="col" class="num" data-sort="rss"><button type="button">Memory</button></th>
+          <th scope="col" class="num" data-sort="growth_5m"><button type="button">Δ 5 min</button></th>
+          <th scope="col" class="num" data-sort="cpu"><button type="button">CPU</button></th>
+          <th scope="col" class="num" data-sort="threads"><button type="button">Threads</button></th>
+          <th scope="col">Last 10 min</th>
+        </tr></thead>
+        <tbody id="live-body"></tbody>
+      </table>
+    </div>
+    <p id="live-count" class="hint"></p>
+  </section>
+
+  <dialog id="proc" aria-labelledby="proc-title">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="proc-title">Process</h2>
+        <form method="dialog"><button type="submit" class="btn">Close</button></form>
+      </div>
+      <div id="proc-body"></div>
+    </div>
+  </dialog>
 </div>
 </body>
 </html>

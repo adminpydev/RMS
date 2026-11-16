@@ -8,8 +8,6 @@ import time
 
 import psutil
 
-from rms.live import Recent
-
 log = logging.getLogger("rms.collector")
 _SKIP = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess)
 
@@ -77,6 +75,7 @@ class Collector:
         self._ps_lock = threading.Lock()
         self.extras = (None, None)
         self.last_extras = -10**9
+        self.last_scan = -10**9  # ts of the last scan_live, by tick or the live sampler
 
     def _system(self):
         vm, sw = psutil.virtual_memory(), psutil.swap_memory()
@@ -86,6 +85,7 @@ class Collector:
 
     def scan_live(self, now):
         """One process_iter pass + cpu + recent.push."""
+        self.last_scan = now
         system = self._system()
         with self._ps_lock:
             procs = sample_processes(psutil.process_iter(self._ATTRS), sys.platform)
@@ -108,7 +108,8 @@ class Collector:
         if sys.platform == "darwin" and now - self.last_extras >= 30:
             self.extras = mac_extras()
             self.last_extras = now
-        self.scan_live(now)
+        if now - self.last_scan >= 2:  # the 2 s live sampler just scanned: reuse its entry
+            self.scan_live(now)
 
     def run(self, stop):
         while not stop.is_set():

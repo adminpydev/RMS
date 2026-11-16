@@ -137,3 +137,23 @@ def test_scan_live_pushes(env):
     r = Recent()
     Collector(r).scan_live(1000)
     assert r.snapshot()["ts"] == 1000 and env["extras_calls"] == 0
+
+
+def test_tick_skips_scan_after_recent_live_scan(env):
+    env["procs"] = [P(1, 100 * MiB)]
+    c = Collector(Recent())
+    c.scan_live(999)  # live sampler
+    c.tick(1000)
+    assert env["iter_calls"] == 1 and env["extras_calls"] == 1  # scan skipped, extras still read
+    c.tick(1010)
+    assert env["iter_calls"] == 2
+
+
+def test_ps_cache_pruned_when_process_gone(env):
+    env["procs"] = [P(1, 100 * MiB), P(2, 5 * MiB)]
+    c = Collector(Recent())
+    c.scan_live(1000)
+    assert set(c._ps) == {(1, 100), (2, 100)}
+    env["procs"] = env["procs"][:1]
+    c.scan_live(1010)
+    assert set(c._ps) == {(1, 100)}

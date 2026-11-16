@@ -152,3 +152,30 @@ def test_no_mutating_methods(env):
     for m in ("POST", "PUT", "DELETE"):
         for p in ("/api/live", "/api/process/1"):
             assert not 200 <= req(env[0], p, method=m)[0].status < 300
+
+
+@pytest.mark.parametrize("site,code", [("cross-site", 403), ("same-site", 403),
+                                       ("same-origin", 200), ("none", 200), (None, 200)])
+def test_sec_fetch_site(env, site, code):
+    srv = env[0]
+    port = srv.server_address[1]
+    for path in ("/api/live", "/"):
+        c = http.client.HTTPConnection("127.0.0.1", port)
+        h = {"Host": f"127.0.0.1:{port}"}
+        if site:
+            h["Sec-Fetch-Site"] = site
+        c.request("GET", path, headers=h)
+        r = c.getresponse()
+        r.read()
+        c.close()
+        if code == 403:
+            assert r.status == 403
+        else:
+            assert r.status != 403 and (path != "/api/live" or r.status == 200)
+
+
+def test_500_no_leak(env, monkeypatch):
+    srv, store = env
+    monkeypatch.setattr(store, "query_processes", lambda *a: 1 / 0)
+    r, body = req(srv, "/api/processes?from=1000&to=1020&step=10")
+    assert r.status == 500 and json.loads(body) == {"error": "internal error"}

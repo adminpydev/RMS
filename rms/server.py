@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -80,6 +81,8 @@ def make_server(store, port, meta, web_dir, recent=None, sampler=None, proc_ids=
             port = self.server.server_address[1]
             if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
                 return self._json(403, {"error": "forbidden host"})
+            if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+                return self._json(403, {"error": "cross-site request"})
             u = urlparse(self.path)
             try:
                 if u.path.startswith("/api/"):
@@ -88,8 +91,9 @@ def make_server(store, port, meta, web_dir, recent=None, sampler=None, proc_ids=
                     self._static(u.path)
             except _Bad as e:
                 self._json(400, {"error": str(e)})
-            except Exception as e:  # never leak a traceback / drop the connection
-                self._json(500, {"error": f"internal error: {e}"})
+            except Exception:  # never leak a traceback / drop the connection
+                logging.getLogger("rms.server").exception("request failed: %s", self.path)
+                self._json(500, {"error": "internal error"})
 
         def _api(self, path, q):
             if path == "/api/meta":
@@ -121,9 +125,7 @@ def make_server(store, port, meta, web_dir, recent=None, sampler=None, proc_ids=
                     return self._json(404, {"error": "not found"})
                 par = d["parent"]
                 if par and par["id"] is None and recent is not None:
-                    with recent._lock:
-                        par["name"] = next((v["name"] for v in recent.meta.values()
-                                            if v["pid"] == par["pid"]), None)
+                    par["name"] = recent.name_of(par["pid"], d["start_ts"])
                 return self._json(200, d)
             if path == "/api/live" and recent is not None:
                 if q.get("fast", [None])[-1] == "1" and sampler is not None:

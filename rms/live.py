@@ -47,6 +47,16 @@ class Recent:
             for k in [k for k, t in self._last.items() if t < cut]:
                 del self._last[k], self.meta[k], self._procs[k]
 
+    def name_of(self, pid, before_start_ts):
+        """Name of the live process `pid` (newest buffer entry) started at or before the cutoff."""
+        with self._lock:
+            if not self.entries:
+                return None
+            cand = [self.meta[k] for k in self.entries[-1][2]
+                    if k in self.meta and self.meta[k]["pid"] == pid
+                    and self.meta[k]["start_ts"] <= before_start_ts]
+        return max(cand, key=lambda m: m["start_ts"])["name"] if cand else None
+
     def fill_meta(self, key, proc):
         cmd = _read(proc.cmdline)
         return {"user": _read(proc.username),

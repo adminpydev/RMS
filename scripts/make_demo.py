@@ -102,7 +102,8 @@ PROCS = [
      "/Applications/zoom.us.app/Contents/MacOS/zoom.us", 1, (100, 400), None),
     # newcomers: dev server from 15:00 on day 3; training script in the last 8 min (fast grower)
     (11842, 1, "node", "node", "Other (small apps)", "demo",
-     "node server.js --port 3000 --api-key ***", 0, (5, 80), (2 * 86400 + 15 * 3600, 120, 550)),
+     "node server.js --port 3000 --api-key sk-demo" + "0123456789abcdefghijklmn",  # fake; redacted
+     0, (5, 80), (2 * 86400 + 15 * 3600, 120, 550)),
     (14207, 1, "python3", "python3", "Other (small apps)", "demo",
      "/opt/homebrew/bin/python3 train.py --epochs 20 --batch-size 64", 0, (300, 900),
      (END - 480, 480, 720)),

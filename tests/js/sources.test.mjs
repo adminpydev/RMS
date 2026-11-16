@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { DemoSource, LiveSource } from "../../rms/web/sources.js";
+import { DemoSource, LiveSource, loadSource, outdated } from "../../rms/web/sources.js";
 import { insights } from "../../rms/web/insights.js";
 
 const sample = JSON.parse(readFileSync(new URL("../../site/sample.json", import.meta.url)));
@@ -99,7 +99,7 @@ test("process(): server shape, parent/children, 30-min series, not found", async
   // python3 started 2 sim-min ago: series only since start
   const py = live.processes.find((x) => x.pid === PID.python);
   assert.equal((await src.process(py.pid, py.start_ts)).series.length, 13);
-  await assert.rejects(src.process(PID.notion, row.start_ts + 1), /not found/);
+  await assert.rejects(src.process(PID.notion, row.start_ts + 1), (e) => e.status === 404);
   set(0); // python3 not started yet
   await assert.rejects(src.process(py.pid, py.start_ts), /not found/);
 });
@@ -117,9 +117,29 @@ test("LiveSource calls the v0.3 endpoints", async () => {
     await s.live();
     await s.live({ fast: true });
     await s.process(12, 345);
-    await assert.rejects(s.process(9, 1), /not found/);
-    assert.deepEqual(calls.map((u) => u.replace(/\?$/, "")),
+    await assert.rejects(s.process(9, 1), (e) => e.status === 404 && /not found/.test(e.message));
+    assert.deepEqual(calls,
                      ["/api/meta", "/api/live", "/api/live?fast=1", "/api/process?pid=12&start_ts=345",
                       "/api/process?pid=9&start_ts=1"]);
   } finally { globalThis.fetch = orig; }
+});
+
+test("loadSource: localhost takes any 200 /api/meta as LiveSource; elsewhere only mode live", async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (u) => (u === "/api/meta"
+    ? { ok: true, status: 200, json: async () => ({ mode: "local", version: "0.2.1" }) }
+    : { ok: true, status: 200, json: async () => sample });
+  try {
+    globalThis.location = { hostname: "localhost" };
+    assert.ok((await loadSource()) instanceof LiveSource);
+    globalThis.location = { hostname: "127.0.0.1" };
+    assert.ok((await loadSource()) instanceof LiveSource);
+    globalThis.location = { hostname: "example.github.io" };
+    assert.ok((await loadSource()) instanceof DemoSource);
+  } finally { globalThis.fetch = orig; delete globalThis.location; }
+});
+
+test("outdated(): missing or < 0.3.0", () => {
+  for (const v of [undefined, null, "", "0.2.9", "0.2", "x.y", "0.1.0"]) assert.equal(outdated(v), true, String(v));
+  for (const v of ["0.3.0", "0.3.1", "0.10.0", "1.0.0", "0.3"]) assert.equal(outdated(v), false, v);
 });

@@ -93,4 +93,6 @@ test("order: pressure, swap, fast (desc), steady (desc), newcomer (rss desc); ca
   assert.deepEqual(all.map((i) => i.pid), [6, 5, 4, 3]);
   const few = insights({ live: live([procs[0], procs[1], procs[2]], { pressure: 2, swap_used: GB }), now: NOW });
   assert.deepEqual(few.map((i) => i.pid ?? i.text.slice(0, 4)), ["Memo", "Swap", 3, 2]);
+  assert.deepEqual(few.map((i) => i.kind), ["pressure", "swap", "steady", "new"]);
+  assert.deepEqual(all.map((i) => i.kind), ["fast", "fast", "steady", "steady"]);
 });

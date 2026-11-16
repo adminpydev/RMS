@@ -102,7 +102,6 @@ table.apps { width: 100%; border-collapse: collapse; font-size: 14px; }
 .apps tbody tr:focus-visible { outline-offset: -2px; }
 .spark { display: block; width: 96px; height: 22px; }
 .spark path { fill: none; stroke: var(--apps); stroke-width: 1.25; vector-effect: non-scaling-stroke; }
-.detail { margin-top: 16px; }
 
 /* ---------- insights, live table, detail dialog ---------- */
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

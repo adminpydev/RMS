@@ -87,7 +87,7 @@ export class DemoSource {
     for (let k = lo; d && k <= i; k++) {
       if (d.rss[k] != null) series.push({ ts: ts[k] + this.off, rss: d.rss[k], cpu: d.cpu?.[k] ?? null });
     }
-    if (!series.length) throw new Error("not found");
+    if (!series.length) throw Object.assign(new Error("not found"), { status: 404 });
     const alive = this.procs.filter((p) => p.rss[i] != null && p !== d);
     const par = alive.filter((p) => p.pid === d.ppid && p.start_ts <= start_ts)
       .sort((a, b) => b.start_ts - a.start_ts)[0];
@@ -117,9 +117,10 @@ export class LiveSource {
   async _get(path, params = {}) {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) if (v != null) q.set(k, v);
-    const r = await fetch(`/api/${path}?${q}`);
+    const qs = String(q);
+    const r = await fetch(qs ? `/api/${path}?${qs}` : `/api/${path}`);
     const body = await r.json();
-    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    if (!r.ok) throw Object.assign(new Error(body.error || `HTTP ${r.status}`), { status: r.status });
     return body;
   }
 
@@ -128,15 +129,23 @@ export class LiveSource {
   process(pid, start_ts) { return this._get("process", { pid, start_ts }); }
 }
 
-// Live server if /api/meta answers within 1.5 s, else the static demo dataset.
+// True when an RMS server (meta.version) predates this dashboard (0.3.0) or does not say.
+export function outdated(version) {
+  const v = String(version ?? "").split(".").map(Number);
+  if (v.length < 2 || v.some(isNaN)) return true;
+  for (const [i, min] of [0, 3, 0].entries()) if ((v[i] ?? 0) !== min) return (v[i] ?? 0) < min;
+  return false;
+}
+
+// Live server if /api/meta answers within 1.5 s, else the static demo dataset. On localhost
+// any 200 counts, so an older server still gets LiveSource and app.js can ask for an upgrade.
 export async function loadSource() {
+  const local = typeof location !== "undefined" && ["127.0.0.1", "localhost"].includes(location.hostname);
   try {
     const r = await fetch("/api/meta", { signal: AbortSignal.timeout(1500) });
-    if (r.ok && (await r.json()).mode === "live") return new LiveSource();
+    if (r.ok && (local || (await r.json()).mode === "live")) return new LiveSource();
   } catch { /* no server answered */ }
-  if (typeof location !== "undefined" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
-    throw Object.assign(new Error("RMS server not responding"), { local: true });
-  }
+  if (local) throw Object.assign(new Error("RMS server not responding"), { local: true });
   const r = await fetch("./sample.json");
   if (!r.ok) throw new Error(`sample.json: HTTP ${r.status}`);
   return new DemoSource(await r.json());

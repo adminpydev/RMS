@@ -4,7 +4,7 @@
 import { esc, fmtBytes, fmtCpu, fmtTime, procKey, lineChart } from "./util.js";
 
 let src = null, snapshot = () => null;
-let opener = null, openerKey = null, openerBox = null, token = 0;
+let opener = null, openerKey = null, openerBox = null, token = 0, retry = null;
 const dlg = () => document.getElementById("proc");
 
 const link = (p, text) => `<button type="button" class="link" data-key="${esc(procKey(p))}">${esc(text)}</button>`;
@@ -14,8 +14,9 @@ const cmdBlock = (cmd) => `<h3>Command</h3>${cmd
   ? `<pre class="cmd-full">${esc(cmd)}</pre><p class="copy-row"><button type="button" class="btn" data-copy>Copy command</button> <span class="muted" role="status" data-copied></span></p>`
   : `<p class="empty">Not available (no permission to read it).</p>`}`;
 
-export async function openProcess(pid, start_ts, from) {
+export async function openProcess(pid, start_ts, from, again = false) {
   const d = dlg();
+  retry = null;
   if (!d.open) {
     opener = from ?? document.activeElement;
     openerKey = opener?.dataset?.key ?? null;
@@ -24,13 +25,21 @@ export async function openProcess(pid, start_ts, from) {
   }
   const my = ++token, body = document.getElementById("proc-body");
   const row = snapshot()?.processes.find((r) => r.pid === pid && r.start_ts === start_ts);
-  title(esc(row ? `${row.name} (PID ${pid})` : `PID ${pid}`));
-  body.innerHTML = `<p class="empty">Loading…</p>`;
+  if (!again) {
+    title(esc(row ? `${row.name} (PID ${pid})` : `PID ${pid}`));
+    body.innerHTML = `<p class="empty">Loading…</p>`;
+  }
   let p;
   try {
     p = await src.process(pid, start_ts);
-  } catch {
-    if (my === token) body.innerHTML = `<p class="empty">This process is no longer in the last 30 minutes of data.</p>`;
+  } catch (e) {
+    if (my !== token) return;
+    if (e.status === 404) {
+      body.innerHTML = `<p class="empty">This process is no longer in the last 30 minutes of data.</p>`;
+    } else {
+      body.innerHTML = `<p class="empty">Could not load, retrying…</p>`;
+      retry = { pid, start_ts };
+    }
     return;
   }
   if (my !== token || !d.open) return;
@@ -48,6 +57,11 @@ export async function openProcess(pid, start_ts, from) {
     ${cmdBlock(p.cmdline)}
     <h3>Memory</h3>${lineChart(p.series, "rss", fmtBytes, "Memory used by this process over the last 30 minutes")}
     <h3>CPU</h3>${lineChart(p.series, "cpu", fmtCpu, "CPU used by this process over the last 30 minutes")}`;
+}
+
+// app.js calls this after every poll: a dialog whose load failed (not a 404) tries again.
+export function retryProcess() {
+  if (retry && dlg().open) openProcess(retry.pid, retry.start_ts, null, true);
 }
 
 function openFrom(el) {
@@ -85,10 +99,11 @@ export function bindProcess(source, getSnapshot) {
   });
   d.addEventListener("close", () => {
     token++;
+    retry = null;
     // the opener may have been rebuilt by a poll while the dialog was open
     const back = opener?.isConnected ? opener
       : openerKey && openerBox?.querySelector(`[data-key="${CSS.escape(openerKey)}"]`);
-    back?.focus();
+    (back || document.getElementById("live-search")).focus(); // opener gone: back to search
     opener = openerKey = openerBox = null;
   });
 }

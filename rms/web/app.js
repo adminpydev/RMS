@@ -1,14 +1,14 @@
 // RMS dashboard orchestrator: header, demo banner, system line and the single /api/live poll.
 // Data comes from LiveSource (local server) or DemoSource (sample.json replay).
-import { loadSource } from "./sources.js";
+import { loadSource, outdated } from "./sources.js";
 import { insights } from "./insights.js";
 import { esc, fmtBytes } from "./util.js";
 import { setLive, liveError, tickLive, isPaused, bindLive } from "./live.js";
 import { renderInsights } from "./insights-ui.js";
-import { bindProcess } from "./process.js";
+import { bindProcess, retryProcess } from "./process.js";
 
 const $ = (s) => document.querySelector(s);
-const POLL_MS = 2000;
+const POLL_MS = 2000, PAUSED_MS = 10000;
 const LOST = "Lost connection to RMS. Retrying…";
 const OLD = "This RMS server is older than the dashboard. Update with: pipx install --force git+https://github.com/adminpydev/RMS";
 const OS = { darwin: "macOS", linux: "Linux", win32: "Windows" };
@@ -43,26 +43,31 @@ function renderSystem(sys) {
     ${plabel ? `<span>Pressure <i class="sw ${pcls}"></i>${plabel}</span>` : ""}`;
 }
 
-// One /api/live fetch feeds the system line, insights and table: every 2 s while the page
-// is visible and not paused. Hidden or paused: no polling (visibilitychange / Resume restart it).
+// One /api/live fetch feeds the system line, insights and table: every 2 s (fast: 2 s
+// samples) while visible. Paused freezes only the table: system line and insights keep
+// polling every 10 s without fast (server falls back to 10 s samples). Hidden: no polling
+// (visibilitychange / Pause / Resume restart it).
 async function poll() {
   clearTimeout(timer);
   const my = ++gen;
-  if (document.visibilityState !== "visible" || isPaused()) return;
+  if (document.visibilityState !== "visible") return;
+  const paused = isPaused();
   try {
-    const d = await src.live({ fast: true });
+    const d = await src.live({ fast: !paused });
     if (my !== gen) return; // a newer poll started meanwhile
     last = d;
     setStatus(null);
     renderSystem(d.system);
-    renderInsights(insights({ live: d }));
-    setLive(d);
+    renderInsights(insights({ live: d }), d);
+    if (paused) liveError(null); // table stays frozen; just clear a stale error
+    else setLive(d);
+    retryProcess();
   } catch (e) {
     if (my !== gen) return;
     console.error(e);
     liveError(LOST);
   }
-  timer = setTimeout(poll, POLL_MS);
+  timer = setTimeout(poll, paused ? PAUSED_MS : POLL_MS);
 }
 
 async function init() {
@@ -74,7 +79,7 @@ async function init() {
     if (e.local) { setStatus("RMS server not responding. Retrying…"); return void setTimeout(init, 3000); }
     return setStatus(`Could not load data: ${e.message}`);
   }
-  if (!meta.features?.includes("live")) {
+  if (outdated(meta.version) || !meta.features?.includes("live")) {
     document.body.innerHTML = `<main class="wrap"><p class="old">${esc(OLD)}</p></main>`;
     return;
   }

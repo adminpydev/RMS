@@ -9,19 +9,17 @@ import re
 
 _MAX = 16384
 _W = r"(?:pass|pwd|secret|token|api[-_]?key|auth|credential|session|private[-_]?key|access[-_]?key)"
-# value after '=' / space: first piece may be an unterminated quote, rest must be balanced
-_V = r"""(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s"'])(?:"[^"]*"|'[^']*'|[^\s"'])*"""
-# value for bare NAME=value: balanced quotes only, so a closing quote opened earlier survives
-_VS = r"""(?:"[^"]*"|'[^']*'|[^\s"'])+"""
+# value: balanced quotes, or an unterminated quote that masks to end of string, or plain chars
+_V = r"""(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s"'])+"""
 
 # well-known token shapes anywhere (left boundary so e.g. "disk-cache" is safe)
 _TOK = re.compile(
-    r"(?<![\w-])(?:gh[pousr]_\w{20,}|github_pat_\w{20,}|sk-[\w-]{20,}|xox[abpr]-[\w-]+"
-    r"|AKIA[0-9A-Z]{16}|eyJ[\w-]+\.[\w-]+\.[\w-]+)"
+    r"(?<![\w-])sk-[\w-]{20,}|gh[pousr]_\w{20,}|github_pat_\w{20,}|xox[abpr]-[\w-]+"
+    r"|AKIA[0-9A-Z]{16}|eyJ[\w-]+\.[\w-]+\.[\w-]+"
 )
 # curl -u user:pass / --user[=]user:pass: keep user, mask the rest
 _USER = re.compile(
-    r"""(?P<p>(?<![\w.-])(?:-u|--user|--proxy-user)(?:=|\s+)["']?[^\s:"']*:)[^\s"']*"""
+    r"""(?P<p>(?<![\w.-])(?:-u|--user|--proxy-user)(?:=|\s+)(?P<q>["'])?[^\s:"']*:)(?(q)[^"']*|[^\s"']*)"""
 )
 # cookies: header and flags, whole value
 _COOKIE_H = re.compile(r"(?P<p>(?<![\w-])(?:set-)?cookie:\s*)[^\"'\n]+", re.I)
@@ -40,7 +38,7 @@ _FLAG = re.compile(
 )
 # NAME=value env-style / bare assignments
 _ENV = re.compile(
-    rf"(?<![\w.-])(?:(?=[\w.]*?{_W})|(?=(?:[\w.]*[_.])?(?:key|pw)=))(?P<n>[\w.]+)=(?:{_VS}|(?=\s|$))",
+    rf"(?<![\w.-])(?:(?=[\w.]*?{_W})|(?=(?:[\w.]*[_.])?(?:key|pw)=))(?P<n>[\w.]+)=(?:{_V}|(?=\s|$))",
     re.I,
 )
 # Header: value (Authorization: Bearer x, X-Api-Key: x)

@@ -1,5 +1,6 @@
 import argparse
 import errno
+import signal
 import socket
 import sys
 import threading
@@ -18,6 +19,10 @@ def _meta(interval):
     return {"host": socket.gethostname(), "os": sys.platform,
             "total_ram": psutil.virtual_memory().total,
             "interval": interval, "version": __version__}
+
+
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
 
 
 def _run(a):
@@ -42,6 +47,7 @@ def _run(a):
     print(f"RMS running at {url}  (Ctrl+C to stop)")
     if not a.no_browser:
         webbrowser.open(url)
+    signal.signal(signal.SIGTERM, _interrupt)  # stop like Ctrl+C (kill, launchd, systemd)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

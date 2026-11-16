@@ -49,22 +49,39 @@ def test_cli_rejects_removed(argv):
     assert e.value.code == 2
 
 
-def test_run_writes_nothing(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
+def _free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _spawn(home, port):
     env = {k: v for k, v in os.environ.items() if not k.startswith("XDG_")}
     env.update(HOME=str(home), PYTHONDONTWRITEBYTECODE="1",
                PYTHONPATH=str(Path(__file__).resolve().parents[1]))
-    p = subprocess.Popen([sys.executable, "-m", "rms.cli", "run", "--no-browser", "--port", "8791"],
-                         cwd=home, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.Popen([sys.executable, "-m", "rms.cli", "run", "--no-browser", "--port", str(port)],
+                            cwd=home, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _get(port):
+    rq = urllib.request.Request(f"http://127.0.0.1:{port}/api/live?fast=1",
+                                headers={"Host": f"127.0.0.1:{port}"})
+    return urllib.request.urlopen(rq, timeout=2).status
+
+
+def test_run_writes_nothing(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    port = _free_port()
+    p = _spawn(home, port)
     try:
         got = []
         for _ in range(12):
             time.sleep(1)
             try:
-                rq = urllib.request.Request("http://127.0.0.1:8791/api/live?fast=1",
-                                            headers={"Host": "127.0.0.1:8791"})
-                got.append(urllib.request.urlopen(rq, timeout=2).status)
+                got.append(_get(port))
             except OSError:
                 pass
         assert got.count(200) >= 2
@@ -73,3 +90,25 @@ def test_run_writes_nothing(tmp_path):
         out, err = p.communicate(timeout=20)
     assert p.returncode == 0, err
     assert list(home.rglob("*")) == []
+
+
+def test_run_sigterm_exits_cleanly(tmp_path):
+    port = _free_port()
+    p = _spawn(tmp_path, port)
+    try:
+        for _ in range(20):
+            time.sleep(0.5)
+            try:
+                if _get(port) == 200:
+                    break
+            except OSError:
+                pass
+        else:
+            pytest.fail("server never answered")
+        p.send_signal(signal.SIGTERM)
+        out, err = p.communicate(timeout=20)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.communicate()
+    assert p.returncode == 0, err

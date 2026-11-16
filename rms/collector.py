@@ -3,10 +3,12 @@ import ntpath
 import re
 import subprocess
 import sys
+import threading
 import time
 
 import psutil
 
+from rms.live import Recent
 from rms.store import OTHER_SMALL
 
 log = logging.getLogger("rms.collector")
@@ -41,6 +43,48 @@ def sample_apps(procs, platform):
         rss, n = out.get(app, (0, 0))
         out[app] = (rss + mem.rss, n + 1)
     return out
+
+
+def sample_processes(procs, platform):
+    out = {}
+    for p in procs:
+        try:
+            info = p.info
+            mem, ct = info["memory_info"], info["create_time"]
+            if mem is None or ct is None:
+                continue
+            app = app_name(info["name"], info["exe"], platform)
+            if not app:
+                continue
+        except _SKIP:
+            continue
+        start = int(ct)
+        out[(info["pid"], start)] = {"pid": info["pid"], "ppid": info["ppid"], "start_ts": start,
+                                     "name": info["name"] or app, "app": app, "rss": mem.rss,
+                                     "threads": info["num_threads"], "proc": p}
+    return out
+
+
+class ProcessTracker:
+    def __init__(self, top=50, threshold=50 * 2**20, hold=3600):
+        self.top, self.threshold, self.hold = top, threshold, hold
+        self.last_pass = {}
+
+    def select(self, ts, procs):
+        for k in sorted(procs, key=procs.get, reverse=True)[:self.top]:
+            self.last_pass[k] = ts
+        for k, rss in procs.items():
+            if rss > self.threshold:
+                self.last_pass[k] = ts
+        self.last_pass = {k: t for k, t in self.last_pass.items() if ts - t < self.hold}
+        return {k for k in procs if k in self.last_pass}
+
+
+def _meta_read(fn):
+    try:
+        return fn()
+    except _SKIP:
+        return None
 
 
 class Tracker:
@@ -83,12 +127,45 @@ def mac_extras():
 
 
 class Collector:
-    def __init__(self, store, interval=10, retention_days=14):
+    _ATTRS = ["pid", "ppid", "name", "exe", "memory_info", "create_time", "num_threads"]
+
+    def __init__(self, store, interval=10, retention_days=14, recent=None):
         self.store, self.interval, self.retention = store, interval, retention_days
         self.tracker = Tracker()
+        self.ptracker = ProcessTracker()
+        self.recent = recent if recent is not None else Recent()
+        self.proc_ids = {}
+        self._ps = {}  # key -> psutil.Process for cpu_percent; shared with the live sampler
+        self._ps_lock = threading.Lock()
         self.extras = (None, None)
         self.last_extras = -10**9
         self.last_prune = 0
+
+    def _system(self, vm, sw):
+        pressure = self.extras[0] if sys.platform == "darwin" else None
+        return {"total": vm.total, "used": vm.used, "available": vm.available,
+                "swap_used": sw.used, "pressure": pressure}
+
+    def _scan(self, now, system):
+        """One process_iter pass + cpu + recent.push; no DB writes. Returns (list, procs)."""
+        with self._ps_lock:
+            plist = list(psutil.process_iter(self._ATTRS))
+            procs = sample_processes(plist, sys.platform)
+            for k, v in procs.items():
+                cached = self._ps.get(k)
+                if cached is None:
+                    self._ps[k] = v["proc"]
+                    _meta_read(lambda: v["proc"].cpu_percent(None))  # prime; first reading discarded
+                    v["cpu"] = None
+                else:
+                    pct = _meta_read(lambda: cached.cpu_percent(None))
+                    v["cpu"] = None if pct is None else int(pct * 10)
+            self._ps = {k: p for k, p in self._ps.items() if k in procs}
+        self.recent.push(now, system, procs)
+        return plist, procs
+
+    def scan_live(self, now):
+        self._scan(now, self._system(psutil.virtual_memory(), psutil.swap_memory()))
 
     def tick(self, now):
         if sys.platform == "darwin" and now - self.last_extras >= 30:
@@ -98,10 +175,27 @@ class Collector:
         vm, sw = psutil.virtual_memory(), psutil.swap_memory()
         self.store.write_system(now, vm.total, vm.used, vm.available,
                                 getattr(vm, "cached", None), compressed, sw.used, pressure)
-        totals = sample_apps(psutil.process_iter(["pid", "name", "exe", "memory_info"]), sys.platform)
-        self.store.write_apps(now, self.tracker.select(now, totals))
+        plist, procs = self._scan(now, self._system(vm, sw))
+        self.store.write_apps(now, self.tracker.select(now, sample_apps(plist, sys.platform)))
+        tracked = self.ptracker.select(now, {k: v["rss"] for k, v in procs.items()})
+        new = [k for k in tracked if k not in self.proc_ids]
+        if new:
+            rows = []
+            for k in new:
+                v = procs[k]
+                cmd = _meta_read(v["proc"].cmdline)
+                rows.append((v["pid"], v["ppid"], v["start_ts"], v["name"], v["app"],
+                             _meta_read(v["proc"].username),
+                             " ".join(cmd) if cmd is not None else None))
+            # replace, don't mutate: the live API copies proc_ids from another thread
+            self.proc_ids = {**self.proc_ids, **dict(zip(new, self.store.add_processes(rows, now)))}
+        self.store.write_process_samples(now, [
+            (self.proc_ids[k], procs[k]["rss"], procs[k]["cpu"], procs[k]["threads"]) for k in tracked])
+        self.store.touch_processes(now, [self.proc_ids[k] for k in procs if k in self.proc_ids])
         if now - self.last_prune >= 3600:
             self.store.prune(now - self.retention * 86400)
+            gone = set(self.store.last_pruned_ids)
+            self.proc_ids = {k: i for k, i in self.proc_ids.items() if i not in gone}
             self.last_prune = now
 
     def run(self, stop):

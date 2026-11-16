@@ -31,9 +31,19 @@ class FakeProc:
             raise self._exc
         return self._info
 
+    def cpu_percent(self, interval=None):
+        return 0.0
+
+    def cmdline(self):
+        return ["x"]
+
+    def username(self):
+        return "u"
+
 
 def proc(rss, name="Google Chrome Helper (Renderer)", exe=CHROME_EXE):
-    return FakeProc({"name": name, "exe": exe, "memory_info": type("M", (), {"rss": rss})()})
+    return FakeProc({"name": name, "exe": exe, "memory_info": type("M", (), {"rss": rss})(),
+                     "pid": 1, "ppid": 0, "create_time": 1.0, "num_threads": 1})
 
 
 def test_sample_apps_groups_and_sums():
@@ -71,7 +81,17 @@ class FakeStore:
 
     def prune(self, before):
         self.calls.append(("prune", before))
+        self.last_pruned_ids = []
         return 0
+
+    def add_processes(self, rows, now):
+        return list(range(1, len(rows) + 1))
+
+    def write_process_samples(self, *a):
+        pass
+
+    def touch_processes(self, *a):
+        pass
 
 
 def test_collector_tick_writes(monkeypatch):

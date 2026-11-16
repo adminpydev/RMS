@@ -79,17 +79,6 @@ export function detectLeaks(apps, step) {
   return out;
 }
 
-// Same detector over /api/processes series: [{id, pid, start_ts, name, app, cmdline, slopePerHour, ...}].
-export function processLeaks(processes, step) {
-  const out = [];
-  for (const [id, p] of Object.entries(processes)) {
-    const best = leakOf(p.series, step);
-    if (best) out.push({ id, pid: p.pid, start_ts: p.start_ts, name: p.name, app: p.app, cmdline: p.cmdline,
-                         ...best });
-  }
-  return out;
-}
-
 // "Responsible process(es)" for an app leak, from that app's /api/processes series. Each
 // process gets the same least-squares fit the app card uses, over the APP leak window
 // [startTs, endTs] (present points only), so the numbers line up. Culprits pass the leak

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DemoSource, bucketProcesses, REPLAY_START } from "../../rms/web/sources.js";
-import { MB, detectLeaks, detectSpikes, spikeWindow, processLeaks, leakCulprits, spikeProcesses } from "../../rms/web/analytics.js";
+import { MB, detectLeaks, detectSpikes, spikeWindow, leakCulprits, spikeProcesses } from "../../rms/web/analytics.js";
 import { insights } from "../../rms/web/insights.js";
 
 const sample = JSON.parse(readFileSync(new URL("../../site/sample.json", import.meta.url)));
@@ -59,15 +59,6 @@ test("process() builds the Docker tree from ppid", async () => {
   const k = await src.process("p1", FROM, TO); // kernel_task, ppid 0 not stored
   assert.deepEqual(k.parent, { id: null, pid: 0, name: null });
   await assert.rejects(src.process("nope", FROM, TO), /not found/);
-});
-
-test("processLeaks on demo 3d finds only the Notion renderer", async () => {
-  const r = await src.processes(FROM, TO, { top: "all" });
-  const L = processLeaks(r.processes, r.step);
-  assert.deepEqual(L.map((l) => [l.pid, l.name, l.app]), [[3121, "Notion Helper (Renderer)", "Notion"]]);
-  assert.ok(L[0].slopePerHour > 100 * MB && L[0].slopePerHour < 200 * MB, `${L[0].slopePerHour / MB}`);
-  assert.ok(L[0].id && L[0].cmdline);
-  assert.equal(L[0].start_ts, FROM + 34080);
 });
 
 test("leakCulprits fits the Notion renderer over the app leak window, like the app card", async () => {

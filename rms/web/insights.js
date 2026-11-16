@@ -35,7 +35,7 @@ export function insights({ live, leaks = [], now }) {
     out.push({ severity: "warn", text: `${clip(p.name)} (PID ${p.pid}) grew ${size(p.growth_5m)} in the last 5 min.`,
                ...ref(p) });
   }
-  for (const l of now == null ? [] : leaks.filter((l) => l.endTs >= now - 900)) {
+  for (const l of now == null ? [] : leaks.filter((l) => l.startTs <= now && l.endTs >= now - 900)) {
     const h = Math.max(1, Math.round((l.endTs - l.startTs) / 3600));
     const pid = l.pid != null ? ` (PID ${l.pid})` : "";
     out.push({ severity: "warn", text: `${clip(l.name)} is still leaking: +${size(l.slopePerHour)}/h for ${h} h${pid}.`,

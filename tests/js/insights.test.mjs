@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { insights } from "../../rms/web/insights.js";
 import { DemoSource } from "../../rms/web/sources.js";
-import { detectLeaks, processLeaks } from "../../rms/web/analytics.js";
+import { detectLeaks, leakCulprits } from "../../rms/web/analytics.js";
 
 const MB = 2 ** 20, GB = 2 ** 30, NOW = 1800000000;
 const sys = (o = {}) => ({ total: 16 * GB, used: 8 * GB, available: 8 * GB, swap_used: 0,
@@ -47,6 +47,8 @@ test("ongoing leak", () => {
   assert.equal(r[0].pid, 2231);
   assert.equal(r[0].app, "Notion");
   assert.deepEqual(insights({ live: live(), leaks: [{ ...leak, endTs: NOW - 1000 }], now: NOW }), []);
+  // demo replay: a leak that starts after the replay clock is not "still leaking"
+  assert.deepEqual(insights({ live: live(), leaks: [{ ...leak, startTs: NOW + 60, endTs: NOW + 3600 }], now: NOW }), []);
   // empty live buffer (ts null) and no `now`: time-based rules stay silent
   assert.deepEqual(insights({ live: { ts: null, system: null, processes: [] }, leaks: [leak] }), []);
 });
@@ -57,7 +59,7 @@ test("ongoing leak from real demo leaks carries the process key", async () => {
   const m = await src.meta();
   const a = await src.apps(m.first_ts, m.last_ts + 1, { top: "all" });
   const p = await src.processes(m.first_ts, m.last_ts + 1, { app: "Notion", top: "all" });
-  const [app] = detectLeaks(a.apps, a.step), [pl] = processLeaks(p.processes, p.step);
+  const [app] = detectLeaks(a.apps, a.step), [pl] = leakCulprits(p.processes, app);
   assert.equal(pl.start_ts, m.first_ts + 34080);
   const leak = { ...app, pid: pl.pid, start_ts: pl.start_ts, id: pl.id }; // enrichment done by the UI
   const r = insights({ live: live(), leaks: [leak], now: app.endTs + 60 });

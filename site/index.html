@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:,">
 <title>RMS · See where your RAM really goes</title>
-<meta name="description" content="RMS records RAM usage over time on your own machine and shows which apps use it, leak it, and spike it. Local only, open source.">
+<meta name="description" content="RMS shows which processes use your RAM right now and what grew in the last 30 minutes, in plain language. Local only, nothing stored on disk, open source.">
 <style>
 :root {
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -67,7 +67,7 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
 
   <main>
     <h1>See where your RAM really goes.</h1>
-    <p class="lede">Activity Monitor and Task Manager show RAM right now. RMS records it over time on your own machine, then shows which apps use the most, which ones leak, and what caused the spike at 3pm.</p>
+    <p class="lede">Activity Monitor and Task Manager show a wall of numbers. RMS shows what is using RAM right now and what grew in the last 30 minutes, in plain language, on your own machine.</p>
 
     <div class="install">
       <div class="install-head"><span>Install and start</span><button type="button" class="copy" id="copy">Copy</button></div>
@@ -78,13 +78,13 @@ rms run</pre>
 
     <ul class="privacy">
       <li>Runs only on your machine</li>
-      <li>No telemetry, no accounts</li>
+      <li>Nothing stored on disk</li>
       <li>Open source (Apache-2.0)</li>
     </ul>
 
     <h2>Try it on sample data</h2>
-    <p class="note">This is the real dashboard running on sample data from a demo machine, not your computer. Browsers cannot read system RAM, so this page never shows your own usage. Install RMS to see yours.</p>
-    <iframe class="demo-frame" src="demo/" title="RMS dashboard demo with sample data" loading="lazy"></iframe>
+    <p class="note">This is a simulated replay of sample data, not your computer. Browsers cannot read system RAM, so this page never shows your own usage. Install RMS to see yours.</p>
+    <iframe class="demo-frame" src="demo/" title="RMS live page demo, simulated replay of sample data" loading="lazy"></iframe>
     <p class="demo-link"><a href="demo/">Open full demo</a></p>
   </main>
 

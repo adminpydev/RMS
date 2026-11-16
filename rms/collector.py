@@ -158,6 +158,9 @@ class Collector:
                     _meta_read(lambda: v["proc"].cpu_percent(None))  # prime; first reading discarded
                     v["cpu"] = None
                 else:
+                    # ponytail: one shared Process per key, so while a Live tab is open the 10 s
+                    # tick's cpu_percent window shrinks to the time since the last 2 s sampler
+                    # call (stored cpu noisier); upgrade: separate Process objects per caller.
                     pct = _meta_read(lambda: cached.cpu_percent(None))
                     v["cpu"] = None if pct is None else int(pct * 10)
             self._ps = {k: p for k, p in self._ps.items() if k in procs}

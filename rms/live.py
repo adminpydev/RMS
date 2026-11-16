@@ -1,3 +1,4 @@
+import bisect
 import logging
 import threading
 import time
@@ -32,18 +33,28 @@ class Recent:
     def push(self, ts, system, procs_full):
         procs = {k: (v["rss"], v["cpu"], v["threads"]) for k, v in procs_full.items()}
         with self._lock:
-            self.entries.append((ts, {k: system.get(k) for k in _SYS}, procs))
+            # by ts: a sampler push can land before an older collector push
+            bisect.insort(self.entries, (ts, {k: system.get(k) for k in _SYS}, procs),
+                          key=lambda e: e[0])
             for k, v in procs_full.items():
                 if k not in self.meta:
                     self.meta[k] = {f: v[f] for f in _BASE}
                     self._procs[k] = v["proc"]
-                self._last[k] = ts
-            cut = ts - self.window
-            # ponytail: list slice, O(n) per push; deque if the window grows
-            i = 0
-            while i < len(self.entries) and self.entries[i][0] < cut:
-                i += 1
-            del self.entries[:i]
+                self._last[k] = max(ts, self._last.get(k, ts))
+            now = self.entries[-1][0]
+            cut = now - self.window
+            # every entry for the last 60 s; older: newest per 20 s bucket (spark/growth spacing)
+            # ponytail: O(n) rebuild per push, n stays ~60
+            keep, seen = [], set()
+            for e in reversed(self.entries):
+                if e[0] < cut:
+                    break
+                if now - e[0] > 60:
+                    if e[0] // 20 in seen:
+                        continue
+                    seen.add(e[0] // 20)
+                keep.append(e)
+            self.entries = keep[::-1]
             for k in [k for k, t in self._last.items() if t < cut]:
                 del self._last[k], self.meta[k], self._procs[k]
 
@@ -57,10 +68,10 @@ class Recent:
                     and self.meta[k]["start_ts"] <= before_start_ts]
         return max(cand, key=lambda m: m["start_ts"])["name"] if cand else None
 
-    def fill_meta(self, key, proc):
+    def fill_meta(self, proc):
         cmd = _read(proc.cmdline)
         return {"user": _read(proc.username),
-                "cmdline": redact(" ".join(cmd)) if cmd is not None else None}
+                "cmdline": redact(" ".join(cmd))[:2000] if cmd is not None else None}  # cap like store
 
     def snapshot(self, ids):
         with self._lock:
@@ -70,7 +81,7 @@ class Recent:
             entries = list(self.entries)
             ts, system, procs = entries[-1]
             todo = [(k, self._procs[k]) for k in procs if "cmdline" not in self.meta[k]]
-        filled = {k: self.fill_meta(k, p) for k, p in todo}  # outside the lock: slow syscalls
+        filled = {k: self.fill_meta(p) for k, p in todo}  # outside the lock: slow syscalls
         with self._lock:
             for k, m in filled.items():
                 if k in self.meta:

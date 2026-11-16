@@ -169,7 +169,8 @@ def test_recent_snapshot_shape():
     assert s["ts"] == 360 and s["resolution"] == 2 and s["simulated"] is False
     assert s["system"]["swap_used_10m_ago"] is None and s["system"]["swap_used"] == 360
     rows = {(p["pid"], p["start_ts"]): p for p in s["processes"]}
-    assert rows[old]["growth_5m"] == 300 and rows[old]["id"] == 9
+    # vs ts 58: newest kept entry of the 40-60 bucket (older than 60 s thinned to 20 s)
+    assert rows[old]["growth_5m"] == 302 and rows[old]["id"] == 9
     assert rows[new]["growth_5m"] is None and rows[new]["id"] is None
     assert set(rows[old]) == {"id", "pid", "ppid", "start_ts", "name", "app", "user", "cmdline",
                               "rss", "cpu", "threads", "growth_5m", "spark"}
@@ -179,14 +180,46 @@ def test_recent_snapshot_shape():
     assert rows[old]["spark"] and rows[old]["spark"][-1] == 1360
     for ts in range(362, 601, 2):
         push(r, ts, {old: 1}, swap=ts)
-    assert r.snapshot({})["system"]["swap_used_10m_ago"] == 0
+    assert r.snapshot({})["system"]["swap_used_10m_ago"] == 18  # oldest kept: ts 18
     push(r, 610, {old: 1}, swap=610)
     s = r.snapshot({})
     assert s["resolution"] == 10
-    assert s["system"]["swap_used_10m_ago"] == 10  # entries older than 600 s pruned
+    assert s["system"]["swap_used_10m_ago"] == 18  # entries older than 600 s pruned
     assert (100, 1) in r.meta
     push(r, 961, {old: 1})  # last entry with the others (ts 360) now > 600 s old
     assert set(r.meta) == {old} and set(r._procs) == {old}
+
+
+def test_recent_buffer_bounded():
+    r = Recent()
+    for ts in range(0, 600, 2):  # 300 pushes, 2 s apart
+        push(r, ts, {(1, 1): ts}, swap=ts)
+    ts = [e[0] for e in r.entries]
+    assert len(ts) <= 60
+    assert ts == sorted(ts) and all(t in ts for t in range(540, 600, 2))  # last 60 s complete
+    s = r.snapshot({})
+    assert s["resolution"] == 2
+    assert s["system"]["swap_used_10m_ago"] == 18
+    row = s["processes"][0]
+    assert abs(row["growth_5m"] - 300) <= 20
+    assert 28 <= len(row["spark"]) <= 30
+    assert all(0 < b - a <= 22 for a, b in zip(row["spark"], row["spark"][1:]))  # ~20 s spacing
+
+
+def test_recent_out_of_order_push():
+    r = Recent()
+    push(r, 1002, {(1, 1): 2})  # live sampler
+    push(r, 1000, {(1, 1): 1})  # collector tick, computed earlier, pushed later
+    assert [e[0] for e in r.entries] == [1000, 1002]
+    s = r.snapshot({})
+    assert s["ts"] == 1002 and s["processes"][0]["rss"] == 2
+
+
+def test_live_cmdline_capped():
+    r = Recent()
+    push(r, 0, {(1, 1): 10})
+    r._procs[(1, 1)]._cmd = ["app", "x" * 5000]
+    assert len(r.snapshot({})["processes"][0]["cmdline"]) == 2000
 
 
 def test_live_cmdline_redacted():

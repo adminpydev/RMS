@@ -263,3 +263,11 @@ def test_meta_pruned_with_entries():
     push(r, 100, {(2, 2): 5})  # ts 0 thinned (same 20 s bucket as 5): (1, 1) in no entry
     assert set(r.meta) == set(r._procs) == {(2, 2)}
     assert r.process(1, 1) is None
+
+
+def test_meta_ppid_name_refreshed():
+    r = Recent()
+    push(r, 1000, {(9, 60): 1}, meta={(9, 60): {"ppid": 7, "name": "sh"}})
+    push(r, 1010, {(9, 60): 1}, meta={(9, 60): {"ppid": 1, "name": "python3"}})  # reparent + exec
+    assert (r.meta[(9, 60)]["ppid"], r.meta[(9, 60)]["name"]) == (1, "python3")
+    assert r.snapshot()["processes"][0]["name"] == "python3"

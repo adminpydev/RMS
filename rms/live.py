@@ -63,6 +63,8 @@ class Recent:
                 if k not in self.meta:
                     self.meta[k] = {f: v[f] for f in _BASE}
                     self._procs[k] = v["proc"]
+                else:  # reparenting / exec change these under the same key
+                    self.meta[k].update(ppid=v["ppid"], name=v["name"])
             now = self.entries[-1][0]
             cut = now - self.window
             # every entry for the last 60 s; newest per 20 s bucket to 10 min; per 60 s beyond

@@ -1,6 +1,9 @@
 import importlib.util
 import json
+import re
 from pathlib import Path
+
+from rms import __version__
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("make_demo", ROOT / "scripts" / "make_demo.py")
@@ -8,172 +11,178 @@ make_demo = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(make_demo)
 
 MIB, GIB = 2**20, 2**30
-N = 8640
-H = 3600 // 30  # samples per hour
+N, STEP = 2160, 10
+T0 = 14400
+I0 = T0 // STEP  # replay start index
+M = 60 // STEP  # samples per minute
+D = make_demo.generate(42)
 
 
-def test_deterministic():
-    assert make_demo.generate(42) == make_demo.generate(42)
+def _by_name(name):
+    (p,) = [p for p in D["processes"].values() if p["name"] == name]
+    return p
 
 
-def test_shape_aligned():
-    d = make_demo.generate(42)
-    assert d["meta"]["relative"] is True and d["meta"]["mode"] == "demo"
-    assert d["meta"]["total_ram"] == 16 * GIB
-    assert all(len(v) == N for v in d["system"].values())
-    for a in d["apps"].values():
-        assert len(a["rss"]) == N and len(a["procs"]) == N
-    assert "Other (small apps)" in d["apps"] and len(d["apps"]) == 13
+def _at(arr, t):
+    return arr[t // STEP]
 
 
-def test_invariants():
-    d = make_demo.generate(42)
-    s, total = d["system"], d["meta"]["total_ram"]
-    for i in range(N):
-        assert s["used"][i] <= 0.95 * total
-        assert s["available"][i] == total - s["used"][i]
-        rss = sum(a["rss"][i] or 0 for a in d["apps"].values())
-        assert rss <= s["used"][i] * 1.2
-    assert set(s["pressure"]) == {1, 2} and s["cached"][0] is None
+# --- insight definitions (spec 5.4), evaluated on the raw 10 s samples at index i ---
+def _r2(points):
+    n = len(points)
+    if n < 20:
+        return None
+    mx = sum(x for x, _ in points) / n
+    my = sum(y for _, y in points) / n
+    sxx = sum((x - mx) ** 2 for x, _ in points)
+    sxy = sum((x - mx) * (y - my) for x, y in points)
+    sst = sum((y - my) ** 2 for _, y in points)
+    if not sst or not sxx:
+        return None
+    ssr = sum((y - my - sxy / sxx * (x - mx)) ** 2 for x, y in points)
+    return 1 - ssr / sst
 
 
-def test_planted_leak_present():
-    n = make_demo.generate(42)["apps"]["Notion"]["rss"]
-    day2 = 86400 // 30
-    grow = (n[day2 + 16 * H - 1] - n[day2 + 10 * H]) / MIB
-    assert 800 <= grow <= 1000
+def _trend(rss, i):
+    """Last 1800 s, newest entry per 60 s bucket (aligned to now)."""
+    return _r2([(j * STEP, rss[j]) for j in range(i, i - 1800 // STEP - 1, -M)
+                if j >= 0 and rss[j] is not None])
 
 
-def test_committed_file_matches():
-    with open(ROOT / "site" / "sample.json") as f:
-        assert json.load(f) == make_demo.generate(42)
+def _growth(rss, i, back):
+    # grid is exact, so the closest entry to now-back is the sample at i-back/STEP
+    j = i - back // STEP
+    return None if j < 0 or rss[i] is None or rss[j] is None else rss[i] - rss[j]
 
 
-# --- guard: only planted events trip the Task 6 detectors (270 s buckets) ---
-def _buckets(arr):
-    out = []
-    for i in range(0, len(arr), 9):
-        v = [x for x in arr[i:i + 9] if x is not None]
-        out.append(sum(v) / len(v) if v else None)
+def _insights(p, i):
+    rss, out = p["rss"], set()
+    if rss[i] is None:
+        return out
+    g5, g30 = _growth(rss, i, 300), _growth(rss, i, 1800)
+    if g5 is not None and g5 > 250 * MIB:
+        out.add("fast")
+    elif g30 is not None and g30 > 200 * MIB and (_trend(rss, i) or 0) > 0.8:
+        out.add("steady")
+    if p["start_ts"] >= i * STEP - 600 and rss[i] > 500 * MIB:
+        out.add("newcomer")
     return out
 
 
-def _leaks(b, null_as_zero):
-    """Least-squares leak rule over 2h/6h/24h windows."""
-    pts = [(i, 0 if (v is None and null_as_zero) else v) for i, v in enumerate(b)]
-    for hours, stride in ((2, 7), (6, 20), (24, 80)):
-        w = round(hours * 3600 / 270)
-        for s in range(0, len(b) - w + 1, stride):
-            p = [(x, y / MIB) for x, y in pts[s:s + w] if y is not None]
-            if len(p) < w / 2:  # detectors need >=50% coverage
-                continue
-            n = len(p)
-            mx, my = sum(x for x, _ in p) / n, sum(y for _, y in p) / n
-            sxx = sum((x - mx) ** 2 for x, _ in p)
-            sxy = sum((x - mx) * (y - my) for x, y in p)
-            syy = sum((y - my) ** 2 for _, y in p)
-            if sxx == 0 or syy == 0:
-                continue
-            slope = sxy / sxx * (3600 / 270)  # MiB/h
-            if slope > 50 and sxy * sxy / (sxx * syy) > 0.8 and slope * hours > 200:
-                return True
-    return False
+# --- shape ---
+def test_deterministic():
+    assert make_demo.generate(42) == D
 
 
-def test_no_false_events():
-    d = make_demo.generate(42)
-    for zero in (False, True):
-        flagged = {n for n, a in d["apps"].items() if _leaks(_buckets(a["rss"]), zero)}
-        assert flagged == {"Notion"}, (zero, flagged)
-    u = [x / GIB for x in _buckets(d["system"]["used"])]
-    planted = (14 * 3600, 2 * 86400 + 11 * 3600)
-    fired = {"spike": [], "rise": []}
-    for i in range(len(u) - 2):
-        rise = max(u[i + 1], u[i + 2]) - u[i]
-        t = i * 270
-        near = any(abs(t - p) <= 600 for p in planted)
-        if rise > 1.6:
-            fired["spike"].append(t)
-            assert near, t
-        elif not near:
-            assert rise <= 0.8, (t, rise)
-    assert len(fired["spike"]) >= 2
-
-
-# --- v0.2: processes section ---
-def _procs():
-    return make_demo.generate(42)["processes"]
-
-
-def test_processes_aligned():
-    d = make_demo.generate(42)
-    ps, ts = d["processes"], d["system"]["ts"]
-    assert len(ps) >= 25 and set(ps) == {f"p{i}" for i in range(1, len(ps) + 1)}
-    keys = {"pid", "ppid", "name", "app", "user", "cmdline", "start_ts", "rss", "cpu"}
+def test_shape_aligned_ints():
+    m = D["meta"]
+    assert m == {"mode": "demo", "host": "demo-mac", "os": "darwin", "total_ram": 16 * GIB,
+                 "interval": 10, "first_ts": 0, "last_ts": 21590, "version": __version__,
+                 "relative": True, "t0": T0}
+    assert set(D) == {"meta", "system", "processes"}
+    s = D["system"]
+    assert set(s) == {"ts", "used", "available", "swap_used", "pressure"}
+    assert s["ts"] == list(range(0, 21600, 10))
+    assert all(len(v) == N and all(type(x) is int for x in v) for v in s.values())
+    for i in range(N):
+        assert s["available"][i] == 16 * GIB - s["used"][i] and 0 < s["used"][i] < 16 * GIB
+    ps = D["processes"]
+    assert 20 <= len(ps) <= 30 and set(ps) == {f"p{i}" for i in range(1, len(ps) + 1)}
+    keys = {"pid", "ppid", "name", "app", "user", "cmdline", "start_ts", "rss", "cpu", "threads"}
     pids = {p["pid"] for p in ps.values()}
     assert len(pids) == len(ps)
     for p in ps.values():
         assert set(p) == keys
-        assert len(p["rss"]) == N and len(p["cpu"]) == N
-        assert all((r is None) == (c is None) for r, c in zip(p["rss"], p["cpu"]))
-        assert all(type(v) is int for v in p["rss"] + p["cpu"] if v is not None)
+        cols = (p["rss"], p["cpu"], p["threads"])
+        assert all(len(c) == N for c in cols)
+        assert all((r is None) == (c is None) == (t is None) for r, c, t in zip(*cols))
+        assert all(type(v) is int for c in cols for v in c if v is not None)
         first = next(i for i, v in enumerate(p["rss"]) if v is not None)
-        assert p["start_ts"] == ts[first]
+        assert p["start_ts"] == s["ts"][first]
         assert p["ppid"] in pids or p["pid"] in (0, 1)
     by = {p["name"]: p for p in ps.values()}
-    assert by["kernel_task"]["pid"] == 0 and by["kernel_task"]["user"] == "root"
-    assert by["launchd"]["pid"] == 1 and by["launchd"]["user"] == "root"
+    assert by["kernel_task"]["pid"] == 0 and by["launchd"]["pid"] == 1
     assert by["WindowServer"]["user"] == "_windowserver"
     assert by["qemu-system-aarch64"]["ppid"] == by["com.docker.backend"]["pid"]
-    assert sum(p["user"] is None for p in ps.values()) == 1
 
 
-def test_app_rss_is_sum_of_processes():
-    """Exact (tolerance 0): every app series is the sum of its processes.
-    Processes of apps outside the 13 listed ones are folded into "Other (small apps)"."""
-    d = make_demo.generate(42)
-    groups = {}
-    for p in d["processes"].values():
-        a = p["app"] if p["app"] in d["apps"] else "Other (small apps)"
-        groups.setdefault(a, []).append(p["rss"])
-    assert set(groups) == set(d["apps"])
-    for name, series in groups.items():
-        for i, v in enumerate(d["apps"][name]["rss"]):
-            vals = [s[i] for s in series if s[i] is not None]
-            assert v == (sum(vals) if vals else None), (name, i)
-
-
-def test_planted_process_events():
-    ps = _procs()
-    by = {p["name"]: p for p in ps.values()}
-    day = 86400 // 30
-    n = by["Notion Helper (Renderer)"]["rss"]
-    assert 800 <= (n[day + 16 * H - 1] - n[day + 10 * H]) / MIB <= 1000
-    q = by["qemu-system-aarch64"]["rss"]
-    s = 14 * H
-    assert q[s + 6] - q[s - 1] >= 2 * GIB
-    r = [p for p in ps.values() if p["name"] == "Google Chrome Helper (Renderer)"]
-    s = 2 * day + 11 * H
-    assert sum(p["rss"][s + 6] - p["rss"][s - 1] >= 2 * GIB for p in r) == 1
-
-
-def test_replay_end_content():
-    """End of the Live replay: a big newcomer (start in last 600 s, > 500 MiB) that is also
-    a fast grower (> 250 MiB in 5 min), plus a mid-day-3 newcomer still running > 500 MiB."""
-    ps, end = _procs(), (N - 1) * 30
-    assert any(p["start_ts"] >= end - 600 and p["rss"][-1] > 500 * MIB
-               and p["rss"][-1] - p["rss"][-11] > 250 * MIB for p in ps.values())
-    assert any(2 * 86400 + 6 * 3600 <= p["start_ts"] <= end - 6 * 3600
-               and p["rss"][-1] > 500 * MIB for p in ps.values())
-
-
-def test_no_unredacted_secrets():
-    import re
-    bad = re.compile(r"--api-key [^*]|password=[^*]|://[^*/]+:[^*/]+@")
-    cmds = [p["cmdline"] for p in _procs().values() if p["cmdline"]]
-    assert not [c for c in cmds if bad.search(c)]
-    assert any("--api-key ***" in c for c in cmds)
+def test_committed_file_matches():
+    with open(ROOT / "site" / "sample.json") as f:
+        assert json.load(f) == D
 
 
 def test_committed_file_size():
-    assert (ROOT / "site" / "sample.json").stat().st_size <= 4.5e6
+    assert (ROOT / "site" / "sample.json").stat().st_size <= 1.5e6
+
+
+# --- planted events (spec 5.6, offsets from T0) ---
+def test_steady_grower():
+    rss = _by_name("Notion Helper (Renderer)")["rss"]
+    assert 450 * MIB <= _at(rss, T0 + 120) - _at(rss, T0 - 28 * 60) <= 550 * MIB
+    for t in (T0, T0 + 120):
+        assert _trend(rss, t // STEP) > 0.9
+    assert _insights(_by_name("Notion Helper (Renderer)"), I0) == {"steady"}
+
+
+def test_fast_grower():
+    p = _by_name("Slack Helper (Renderer)")
+    assert 350 * MIB <= _at(p["rss"], T0 + 30) - _at(p["rss"], T0 - 270) <= 450 * MIB
+    assert _insights(p, I0) == {"fast"}
+
+
+def test_newcomer():
+    p = _by_name("python3")
+    assert p["start_ts"] == T0 + 60
+    assert all(v is None for v in p["rss"][:I0 + M])
+    assert all(v > 500 * MIB for v in p["rss"][I0 + M:])
+    assert _insights(p, I0 + M) == {"newcomer"}
+
+
+def test_swap_growth():
+    sw = D["system"]["swap_used"]
+    assert 700 * MIB <= _at(sw, T0 + 30 * 60) - _at(sw, T0 + 20 * 60) <= 900 * MIB
+
+
+def _sys_insights(i):
+    s, out = D["system"], set()
+    if s["pressure"][i] >= 2 or s["used"][i] / (16 * GIB) > 0.90:
+        out.add("pressure")
+    if i >= 60 and s["swap_used"][i] - s["swap_used"][i - 60] > 500 * MIB:
+        out.add("swap")
+    return out
+
+
+def test_pressure_window_only():
+    p = D["system"]["pressure"]
+    hot = [i * STEP for i in range(N) if "pressure" in _sys_insights(i)]
+    assert hot and min(hot) >= T0 + 40 * 60 and max(hot) < T0 + 50 * 60
+    assert all(p[i] >= 2 for i in range((T0 + 40 * 60) // STEP, (T0 + 50 * 60) // STEP))
+
+
+def test_no_unredacted_secrets():
+    bad = re.compile(r"--api-key [^*]|sk-demo|password=[^*]|://[^*/]+:[^*/]+@")
+    cmds = [p["cmdline"] for p in D["processes"].values() if p["cmdline"]]
+    assert not [c for c in cmds if bad.search(c)]
+    assert any("--api-key ***" in c for c in cmds)
+    assert "sk-demo" in (ROOT / "scripts" / "make_demo.py").read_text()  # raw in source
+
+
+def test_quiet_otherwise():
+    """Over the replay range only the planted events fire (guards the JS insight tests)."""
+    allowed = {  # (name, kind): [lo, hi) sim ts
+        ("Notion Helper (Renderer)", "steady"): (T0, T0 + 30 * 60),
+        ("Slack Helper (Renderer)", "fast"): (T0, T0 + 5 * 60),
+        ("python3", "newcomer"): (T0 + 60, T0 + 60 + 601),
+        ("system", "swap"): (T0 + 20 * 60, T0 + 40 * 60),
+        ("system", "pressure"): (T0 + 40 * 60, T0 + 50 * 60),
+    }
+    seen, bad = set(), []
+    for i in range(I0, N):
+        t = i * STEP
+        fired = [("system", k) for k in _sys_insights(i)]
+        fired += [(p["name"], k) for p in D["processes"].values() for k in _insights(p, i)]
+        for f in fired:
+            lo, hi = allowed.get(f, (0, 0))
+            (seen.add(f) if lo <= t < hi else bad.append((t, f)))
+    assert not bad, bad[:5]
+    assert seen == set(allowed)

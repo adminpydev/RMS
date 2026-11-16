@@ -34,8 +34,9 @@ class Recent:
         procs = {k: (v["rss"], v["cpu"], v["threads"]) for k, v in procs_full.items()}
         with self._lock:
             # by ts: a sampler push can land before an older collector push
-            bisect.insort(self.entries, (ts, {k: system.get(k) for k in _SYS}, procs),
-                          key=lambda e: e[0])
+            # ponytail: O(n) key list (n ~60 after thinning); insort(key=) needs 3.10
+            i = bisect.bisect_right([e[0] for e in self.entries], ts)
+            self.entries.insert(i, (ts, {k: system.get(k) for k in _SYS}, procs))
             for k, v in procs_full.items():
                 if k not in self.meta:
                     self.meta[k] = {f: v[f] for f in _BASE}

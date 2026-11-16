@@ -8,6 +8,7 @@ import math
 import random
 from pathlib import Path
 
+from rms import __version__
 from rms.redact import redact
 
 MIB, GIB = 2**20, 2**30
@@ -179,7 +180,7 @@ def generate(seed: int = 42) -> dict:
         sys_["swap_used"].append(512 * MIB if hot else 0)
         sys_["pressure"].append(2 if hot else 1)
     meta = {"mode": "demo", "host": "demo-mac", "os": "darwin", "total_ram": TOTAL,
-            "interval": STEP, "first_ts": 0, "last_ts": END, "version": "0.1.0",
+            "interval": STEP, "first_ts": 0, "last_ts": END, "version": __version__,
             "relative": True}
     return {"meta": meta, "system": sys_, "apps": apps, "processes": procs}
 

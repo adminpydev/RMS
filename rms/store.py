@@ -123,18 +123,25 @@ class Store:
             out[n] = series
         return out
 
-    def add_process(self, pid, ppid, start_ts, name, app, user, cmdline, now):
-        cmd = redact(cmdline)
-        if cmd is not None:
-            cmd = cmd[:2000]  # truncate after redaction
+    def add_processes(self, rows, now):
+        """rows: (pid, ppid, start_ts, name, app, user, cmdline); one transaction; returns ids."""
+        ids = []
         with self._lock, self._db:
-            self._db.execute(
-                "INSERT INTO process (pid, ppid, start_ts, name, app, user, cmdline, first_seen, last_seen)"
-                " VALUES (?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(pid, start_ts) DO UPDATE SET last_seen=excluded.last_seen",
-                (pid, ppid, start_ts, name, app, user, cmd, now, now))
-            return self._db.execute(
-                "SELECT id FROM process WHERE pid=? AND start_ts=?", (pid, start_ts)).fetchone()[0]
+            for pid, ppid, start_ts, name, app, user, cmdline in rows:
+                cmd = redact(cmdline)
+                if cmd is not None:
+                    cmd = cmd[:2000]  # truncate after redaction
+                self._db.execute(
+                    "INSERT INTO process (pid, ppid, start_ts, name, app, user, cmdline, first_seen, last_seen)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)"
+                    " ON CONFLICT(pid, start_ts) DO UPDATE SET last_seen=excluded.last_seen",
+                    (pid, ppid, start_ts, name, app, user, cmd, now, now))
+                ids.append(self._db.execute(
+                    "SELECT id FROM process WHERE pid=? AND start_ts=?", (pid, start_ts)).fetchone()[0])
+        return ids
+
+    def add_process(self, pid, ppid, start_ts, name, app, user, cmdline, now):
+        return self.add_processes([(pid, ppid, start_ts, name, app, user, cmdline)], now)[0]
 
     def write_process_samples(self, ts, rows):
         with self._lock, self._db:
@@ -191,7 +198,7 @@ class Store:
         for p, b, s, _, _ in rows:
             if b in counts:
                 total[p] = total.get(p, 0) + s
-        ids = sorted(series, key=lambda p: -total[p])
+        ids = sorted(series, key=lambda p: (-total[p], p))
         if top is not None:
             ids = ids[:top]
         out = {}
@@ -213,20 +220,20 @@ class Store:
         ov = "first_seen < ? AND last_seen >= ?"
         parent = None
         if d["ppid"] is not None:
-            pr = self._q("SELECT id, pid, name FROM process WHERE pid = ? AND id != ? AND " + ov +
-                         " ORDER BY last_seen DESC LIMIT 1", (d["ppid"], id, to, frm))
+            pr = self._q("SELECT id, pid, name FROM process WHERE pid = ? AND id != ? AND start_ts <= ? AND " + ov +
+                         " ORDER BY start_ts DESC LIMIT 1", (d["ppid"], id, d["start_ts"], to, frm))
             parent = ({"id": pr[0][0], "pid": pr[0][1], "name": pr[0][2]} if pr
                       else {"id": None, "pid": d["ppid"], "name": None})
         children = [{"id": i, "pid": p, "name": n} for i, p, n in self._q(
-            "SELECT id, pid, name FROM process WHERE ppid = ? AND id != ? AND " + ov + " ORDER BY id",
-            (d["pid"], id, to, frm))]
+            "SELECT id, pid, name FROM process WHERE ppid = ? AND id != ? AND start_ts >= ? AND " + ov +
+            " ORDER BY id", (d["pid"], id, d["start_ts"], to, frm))]
         rows = self._q(self._PROC_SQL % "AND proc = :p", {"s": step, "f": frm, "t": to, "p": id})
         series = self._process_series(frm, to, step, rows, self._counts(frm, to, step), (id,))
         return {"id": id, **d, "parent": parent, "children": children, "series": series[id]}
 
     def prune(self, before_ts):
-        self.last_pruned_ids = []
         with self._lock, self._db:
+            self.last_pruned_ids = []
             n = self._db.execute("DELETE FROM system WHERE ts < ?", (before_ts,)).rowcount
             n += self._db.execute("DELETE FROM app WHERE ts < ?", (before_ts,)).rowcount
             n += self._db.execute("DELETE FROM process_sample WHERE ts < ?", (before_ts,)).rowcount

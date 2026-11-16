@@ -92,10 +92,11 @@ def test_prune_processes(tmp_path):
     s = mk(tmp_path)
     old = add(s, 1, now=5)
     live = add(s, 2, now=500)
-    s.write_process_samples(5, [(old, 1, 1, 1)])
+    s.write_process_samples(5, [(old, 1, 1, 1), (live, 1, 1, 1)])
     s.write_process_samples(500, [(live, 1, 1, 1)])
     n = s.prune(100)
-    assert n == 2
+    assert n == 3
+    assert s._q("SELECT ts FROM process_sample WHERE proc=?", (live,)) == [(500,)]
     assert s.last_pruned_ids == [old]
     assert s._q("SELECT id FROM process") == [(live,)]
     s.prune(100)
@@ -113,3 +114,31 @@ def test_export_processes_aligned(tmp_path):
     assert e["processes"][str(a)]["name"] == "n"
     st = s.stats()
     assert st["process_rows"] == 1 and st["process_sample_rows"] == 1
+
+
+def test_parent_respects_pid_reuse(tmp_path):
+    s = mk(tmp_path)
+    old = add(s, 1, start=10, ppid=0, name="old", now=100)
+    new = add(s, 1, start=300, ppid=0, name="new", now=400)
+    c1 = add(s, 2, start=50, ppid=1, now=100)
+    c2 = add(s, 3, start=350, ppid=1, now=400)
+    assert s.get_process(c1, 0, 500, 10)["parent"]["id"] == old
+    assert s.get_process(c2, 0, 500, 10)["parent"]["id"] == new
+    assert [c["id"] for c in s.get_process(old, 0, 500, 10)["children"]] == [c1, c2]
+    assert [c["id"] for c in s.get_process(new, 0, 500, 10)["children"]] == [c2]
+
+
+def test_add_processes_batch(tmp_path):
+    s = mk(tmp_path)
+    ids = s.add_processes([(1, 0, 1, "a", "A", "u", "--password=x"), (2, 0, 1, "b", "A", None, None)], 5)
+    assert len(set(ids)) == 2
+    assert s.add_processes([(1, 0, 1, "a", "A", "u", "z")], 9) == [ids[0]]
+
+
+def test_touch_processes(tmp_path):
+    s = mk(tmp_path)
+    ids = s.add_processes([(i, 0, 1, "n", "A", "u", "c") for i in range(1200)], 5)
+    s.touch_processes(77, ids[:1])
+    assert s._q("SELECT COUNT(*) FROM process WHERE last_seen=77") == [(1,)]
+    s.touch_processes(88, ids)
+    assert s._q("SELECT COUNT(*) FROM process WHERE last_seen=88") == [(1200,)]

@@ -32,7 +32,9 @@ def test_export_stdout_format(tmp_path, capsys):
 
 def test_status_empty(tmp_path, capsys):
     assert main(["status", "--db", str(tmp_path / "r.db")]) == 0
-    assert "0 rows" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "0 rows" in out
+    assert "processes: 0 rows" in out and "process samples: 0 rows" in out
 
 
 def test_run_other_oserror_and_store_closed(tmp_path, capsys, monkeypatch):

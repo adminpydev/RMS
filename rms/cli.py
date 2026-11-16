@@ -97,6 +97,7 @@ def _status(a):
         store.close()
     print(f"db: {s['path']}\nsize: {s['size_bytes'] / 2**20:.2f} MB\n"
           f"system: {s['system_rows']} rows\napps: {s['app_rows']} rows\n"
+          f"processes: {s['process_rows']} rows\nprocess samples: {s['process_sample_rows']} rows\n"
           f"range: {_local(s['first_ts'])} .. {_local(s['last_ts'])}")
     return 0
 

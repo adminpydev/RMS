@@ -65,7 +65,7 @@ CASES = [
     ('curl -H "Cookie: sid=abc; b=c" u', 'curl -H "Cookie: ***" u'),
     ("curl --cookie 'sid=abc' u", "curl --cookie *** u"),
     ("curl -b sid=abc u", "curl -b *** u"),
-    ('curl --data-urlencode "password=x" u', 'curl --data-urlencode "password=***')  # closing quote looks unterminated: masks to end (over-redaction accepted),
+    ('curl --data-urlencode "password=x" u', 'curl --data-urlencode "password=***'),  # closing quote looks unterminated: masks to end (over-redaction accepted),
     ('--password="x"y z', "--password=*** z"),
     ('--api-key="a b"c z', "--api-key=*** z"),
     ("--disk-cache-size-limit-bytes=5", "--disk-cache-size-limit-bytes=5"),

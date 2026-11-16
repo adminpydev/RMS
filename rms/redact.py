@@ -16,7 +16,14 @@ _V = r"""(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s"'])+"""
 _TOK = re.compile(
     r"(?<![\w-])sk-[\w-]{20,}|gh[pousr]_\w{20,}|github_pat_\w{20,}|xox[abpr]-[\w-]+"
     r"|AKIA[0-9A-Z]{16}|eyJ[\w-]+\.[\w-]+\.[\w-]+"
+    r"|glpat-[\w-]{20,}|npm_[A-Za-z0-9]{36}|xapp-[\w-]+|hvs\.[\w-]{20,}"
 )
+_SLACK = re.compile(r"(?P<p>https://hooks\.slack\.com/services/)[^\s\"']+")
+# aws configure set aws_secret_access_key <v> / aws_session_token <v>
+_AWS = re.compile(rf"(?P<p>(?<![\w-])(?:aws_secret_access_key|aws_session_token)\s+){_V}")
+# program-specific short flags: sshpass -p <v>, redis-cli -a <v>
+_SHORT = {prog: re.compile(rf"(?P<p>(?<![\w.-])-{f}\s+){_V}")
+          for prog, f in (("sshpass", "p"), ("redis-cli", "a"))}
 # curl -u user:pass / --user[=]user:pass: keep user, mask the rest
 _USER = re.compile(
     r"""(?P<p>(?<![\w.-])(?:-u|--user|--proxy-user)(?:=|\s+)(?P<q>["'])?[^\s:"']*:)(?(q)[^"']*|[^\s"']*)"""
@@ -69,6 +76,13 @@ def redact(cmdline: str | None) -> str | None:
     if cmdline is None:
         return None
     s = _TOK.sub("***", cmdline[:_MAX])
+    s = _SLACK.sub(lambda m: f"{m['p']}***", s)
+    s = _AWS.sub(lambda m: f"{m['p']}***", s)
+    for prog, rx in _SHORT.items():
+        # ponytail: masks the flag anywhere after the program name (over-redaction is fine)
+        i = s.find(prog)
+        if i >= 0:
+            s = s[:i] + rx.sub(lambda m: f"{m['p']}***", s[i:])
     s = _USER.sub(lambda m: f"{m['p']}***", s)
     s = re.sub(r"\S+", _url, s)
     s = _COOKIE_H.sub(lambda m: f"{m['p']}***", s)

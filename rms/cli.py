@@ -13,6 +13,7 @@ import psutil
 
 from rms import __version__
 from rms.collector import Collector
+from rms.live import LiveSampler, Recent
 from rms.server import make_server
 from rms.store import Store
 
@@ -38,8 +39,12 @@ def _meta(interval):
 
 def _run(a):
     store = Store(os.path.expanduser(a.db))
+    recent = Recent()
+    collector = Collector(store, a.interval, a.retention_days, recent)
+    sampler = LiveSampler(recent, collector)
     try:
-        server = make_server(store, a.port, _meta(a.interval), Path(__file__).parent / "web")
+        server = make_server(store, a.port, _meta(a.interval), Path(__file__).parent / "web",
+                             recent, sampler, lambda: collector.proc_ids)
     except OSError as e:
         store.close()
         if e.errno == errno.EADDRINUSE:
@@ -48,9 +53,10 @@ def _run(a):
             print(f"Cannot start server: {e}", file=sys.stderr)
         return 2
     stop = threading.Event()
-    t = threading.Thread(target=Collector(store, a.interval, a.retention_days).run,
-                         args=(stop,), daemon=True)
+    t = threading.Thread(target=collector.run, args=(stop,), daemon=True)
     t.start()
+    lt = threading.Thread(target=sampler.run, args=(stop,), daemon=True)
+    lt.start()
     url = f"http://127.0.0.1:{a.port}"
     print(f"RMS running at {url}  (Ctrl+C to stop)")
     if not a.no_browser:
@@ -62,6 +68,7 @@ def _run(a):
     finally:
         stop.set()
         t.join(timeout=a.interval + 2)
+        lt.join(timeout=3)
         server.server_close()
         store.close()
     return 0

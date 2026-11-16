@@ -105,15 +105,18 @@ def test_prune_processes(tmp_path):
 
 def test_export_processes_aligned(tmp_path):
     s = mk(tmp_path)
-    sysrows(s, 0, 10, 20)
+    sysrows(s, 0, 10, 20, 30, 40)
     a = add(s, 1, name="n", app="A")
     s.write_process_samples(10, [(a, 7, 3, 1)])
+    s.write_process_samples(30, [(a, 9, 4, 1)])
     e = s.export(None, None)
-    assert e["processes"][str(a)]["rss"] == [None, 7, None]
-    assert e["processes"][str(a)]["cpu"] == [None, 3, None]
+    p = e["processes"][str(a)]  # sparse: indices i0..last stored sample only
+    assert p["i0"] == 1
+    assert p["rss"] == [7, None, 9]
+    assert p["cpu"] == [3, None, 4]
     assert e["processes"][str(a)]["name"] == "n"
     st = s.stats()
-    assert st["process_rows"] == 1 and st["process_sample_rows"] == 1
+    assert st["process_rows"] == 1 and st["process_sample_rows"] == 2
 
 
 def test_parent_respects_pid_reuse(tmp_path):

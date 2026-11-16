@@ -69,3 +69,21 @@ test("DemoSource step clamp mirrors server", async () => {
   const r = await src.system(m.first_ts, m.last_ts + 1, 30); // <= 5000 points
   assert.ok(r.points.length <= 5000 && r.step % 30 === 0);
 });
+
+test("DemoSource pads sparse (i0) processes to dense", async () => {
+  const ds = structuredClone(tiny);
+  ds.system.ts = [0, 10, 20, 30];
+  for (const c of ["used", "available", "cached", "compressed", "swap_used", "pressure"]) ds.system[c] = [1, 1, 1, 1];
+  ds.meta.last_ts = 30;
+  ds.processes = { 7: { pid: 7, ppid: 1, name: "n", app: "A", user: "u", cmdline: "x", start_ts: 0,
+                        i0: 1, rss: [5, null, 9], cpu: [1, null, 2] } };
+  const src = new DemoSource(ds, NOW);
+  const p = src.data.processes[7];
+  assert.deepEqual(p.rss, [null, 5, null, 9]);
+  assert.deepEqual(p.cpu, [null, 1, null, 2]);
+  assert.equal(p.i0, undefined);
+  assert.equal(p.first_seen, 10);
+  assert.equal(p.last_seen, 30);
+  const d = await src.process("7", 0, 40, 10);
+  assert.deepEqual(d.series.map((x) => x.rss), [0, 5, 0, 9]); // missing in a sampled bucket = 0, like the store
+});

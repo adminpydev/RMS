@@ -283,20 +283,23 @@ class Store:
         }
 
     def _export_processes(self, lo, hi, ts, idx):
+        """Sparse per process: rss/cpu cover system indices i0..last stored sample (null in gaps)."""
         out = {}
         for pid_, t, rss, cpu in self._q(
                 "SELECT proc, ts, rss, cpu FROM process_sample"
                 " WHERE ts >= ? AND ts <= ? ORDER BY ts", (lo, hi)):
             i = idx.get(t)
-            if i is None:
-                continue
-            o = out.setdefault(pid_, {"rss": [None] * len(ts), "cpu": [None] * len(ts)})
-            o["rss"][i], o["cpu"][i] = rss, cpu
+            if i is not None:
+                out.setdefault(pid_, []).append((i, rss, cpu))
         res = {}
-        for id_ in out:
+        for id_, pts in out.items():
             r = self._q("SELECT pid, ppid, name, app, user, cmdline, start_ts FROM process"
                         " WHERE id = ?", (id_,))
             if r:
+                i0 = pts[0][0]
+                rss, cpu = [None] * (pts[-1][0] - i0 + 1), [None] * (pts[-1][0] - i0 + 1)
+                for i, a, c in pts:
+                    rss[i - i0], cpu[i - i0] = a, c
                 meta = dict(zip(("pid", "ppid", "name", "app", "user", "cmdline", "start_ts"), r[0]))
-                res[str(id_)] = {**meta, **out[id_]}
+                res[str(id_)] = {**meta, "i0": i0, "rss": rss, "cpu": cpu}
         return res

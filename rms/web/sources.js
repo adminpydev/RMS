@@ -149,7 +149,15 @@ export class DemoSource {
     }
     const ts = dataset.system.ts.map((t) => t + off);
     const processes = {};
-    for (const [id, p] of Object.entries(dataset.processes ?? {})) {
+    for (let [id, p] of Object.entries(dataset.processes ?? {})) {
+      if (p.i0 != null) { // sparse export (rms export): pad rss/cpu to system length
+        const { i0: s, ...rest } = p, pad = (a) => {
+          const d = new Array(ts.length).fill(null);
+          a?.forEach((v, k) => { d[s + k] = v; });
+          return d;
+        };
+        p = { ...rest, rss: pad(p.rss), cpu: pad(p.cpu) };
+      }
       const i0 = p.rss.findIndex((r) => r != null), i1 = p.rss.findLastIndex((r) => r != null);
       processes[id] = { ...p, start_ts: p.start_ts + off,
                         first_seen: ts[i0] ?? null, last_seen: ts[i1] ?? null };

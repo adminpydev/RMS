@@ -5,7 +5,7 @@ import { loadSource, outdated } from "./sources.js";
 import { insights } from "./insights.js";
 import { esc, fmtBytes } from "./util.js";
 import { renderSystem } from "./system.js";
-import { setApps, bindApps } from "./apps.js";
+import { setApps, renderApps, bindApps } from "./apps.js";
 import { setLive, liveError, tickLive, isPaused, bindLive } from "./live.js";
 import { renderInsights } from "./insights-ui.js";
 import { bindProcess, refreshProcess } from "./process.js";
@@ -77,7 +77,7 @@ async function init() {
   $("#main").hidden = false;
   bindProcess(src, () => last);
   bindApps();
-  bindLive(poll);
+  bindLive(poll, renderApps);
   document.addEventListener("visibilitychange", poll);
   setInterval(tickLive, 1000);
   poll();

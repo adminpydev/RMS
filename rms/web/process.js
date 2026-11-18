@@ -24,7 +24,7 @@ function render(p) {
   const cmd = p.cmdline
     ? `<pre class="cmd-full">${esc(p.cmdline)}</pre><p class="copy-row"><button type="button" class="btn" data-copy>Copy command</button> <span class="muted" role="status" data-copied>${esc(copied)}</span></p>`
     : `<p class="empty">Not available.</p>`;
-  return `${p.restricted ? `<p class="note">Limited details — owned by another user or the system.</p>` : ""}
+  return `${p.restricted ? `<p class="note">Limited details — macOS didn't allow reading some fields.</p>` : ""}
     ${facts([["App", val(p.app)], ["User", val(p.user)], ["Started", val(p.start_ts, fmtTime)], ["Status", statusCell(p.status)]])}
     ${section("Memory", [["RSS", fmtBytes(p.rss)], ["Unique", fmtBytes(p.uss)], ["Virtual", fmtBytes(p.vms)],
       ["Page faults", fmtNum(p.pfaults)], ["Page-ins", fmtNum(p.pageins)]])}
@@ -40,9 +40,11 @@ function render(p) {
 // Swap the body only when it changed, keeping keyboard focus on the same control.
 function setBody(html) {
   if (html === lastHtml) return;
-  lastHtml = html;
-  const body = document.getElementById("proc-body"), f = document.activeElement;
+  const body = document.getElementById("proc-body"), f = document.activeElement, sel = getSelection();
+  // don't wipe a selection the user (or the copy fallback) made; lastHtml stays stale so the next tick retries
+  if (sel && !sel.isCollapsed && body.contains(sel.anchorNode)) return;
   const fSel = body.contains(f) ? (f.dataset.key ? `[data-key="${CSS.escape(f.dataset.key)}"]` : f.matches("[data-copy]") ? "[data-copy]" : null) : null;
+  lastHtml = html;
   body.innerHTML = html;
   if (fSel) body.querySelector(fSel)?.focus({ preventScroll: true });
 }

@@ -18,6 +18,7 @@ export function fmtSecs(s) {
   return m < 60 ? `${m} min ${Math.floor(s % 60)} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
+const NORMAL = ["running", "sleeping", "idle", "disk-sleep"];
 // Status badge only for unusual states (zombie, stopped, ...); plain muted text otherwise.
-export const statusCell = (st) => (st == null ? DASH : ["running", "sleeping"].includes(st)
+export const statusCell = (st) => (st == null ? DASH : NORMAL.includes(st)
   ? `<span class="muted">${esc(st)}</span>` : `<span class="badge st">${esc(st)}</span>`);

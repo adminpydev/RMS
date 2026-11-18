@@ -28,12 +28,15 @@ def test_app_name_rules(name, exe, plat, want):
 
 
 class P:
-    def __init__(self, pid, rss, name=None, exe=None, start=100, ppid=1, cmd=("prog", "--x"), deny=()):
+    def __init__(self, pid, rss, name=None, exe=None, start=100, ppid=1, cmd=("prog", "--x"), deny=(),
+                 cpu=12.34):
         self.pid = pid
         self.info = {"pid": pid, "ppid": ppid, "name": name or "proc%d" % pid, "exe": exe,
                      "username": "me", "memory_info": type("M", (), {"rss": rss})(),
                      "num_threads": 3, "status": "running", "create_time": start + 0.5}
-        self._cmd, self._deny = list(cmd), set(deny)
+        self._cmd, self._deny, self._cpu = list(cmd), set(deny), cpu
+        if rss is None:
+            self.info["memory_info"] = None  # what process_iter gives for a denied attr
         self.cmd_calls = 0
 
     def _chk(self, what):
@@ -46,7 +49,7 @@ class P:
         return self._cmd
 
     def cpu_percent(self, interval=None):
-        return 12.34
+        return self._cpu
 
 
 @pytest.fixture
@@ -124,6 +127,25 @@ def test_cpu_null_then_number(env):
     s = Snapshotter(platform="linux")
     assert s.take()["processes"][0]["cpu"] is None
     assert s.take()["processes"][0]["cpu"] == 123
+
+
+def test_cpu_rounded(env):
+    env["procs"] = [P(1, 10, cpu=12.36)]
+    s = Snapshotter(platform="linux")
+    s.take()
+    assert s.take()["processes"][0]["cpu"] == 124
+
+
+def test_memory_denied_row_kept(env):
+    env["procs"] = [P(1, 100, name="a"), P(2, None, name="a"), P(3, 300, name="b"),
+                    P(4, 10, name="c")]
+    env["procs"][3].info["create_time"] = None  # can't key: skipped
+    out = Snapshotter(platform="linux").take()
+    assert [r["pid"] for r in out["processes"]] == [3, 1, 2]  # rss desc, nulls last
+    denied = out["processes"][2]
+    assert denied["rss"] is None and denied["share"] is None
+    assert out["apps"] == [{"app": "b", "rss": 300, "share": 0.3, "procs": 1},
+                           {"app": "a", "rss": 100, "share": 0.1, "procs": 2}]
 
 
 def test_cache_pruned(env):
@@ -205,6 +227,26 @@ def test_process_restricted(fake_table):
     assert "abc" not in d["cmdline"]
 
 
+def test_process_negative_pid_none():
+    assert Snapshotter().process_detail(-1, 100) is None
+
+
+def test_process_detail_reuses_recent_take_table(env, fake_table, monkeypatch):
+    now = [0.0]
+    s = Snapshotter(platform="linux", clock=lambda: now[0])
+    env["procs"] = [P(1, 10, name="init", start=50), P(50, 10, start=100),
+                    P(60, 10, name="kid", ppid=50, start=120)]
+    s.take()
+    fake_table(FakeProc(), table=[(1, 0, "other-init", 50.0)])  # scan would see no kid
+    now[0] = 4.9
+    d = s.process_detail(50, 100)
+    assert d["parent"] == {"pid": 1, "start_ts": 50, "name": "init"}
+    assert d["children"] == [{"pid": 60, "start_ts": 120, "name": "kid"}]
+    now[0] = 5.0  # stale: own scan
+    d = s.process_detail(50, 100)
+    assert d["parent"]["name"] == "other-init" and d["children"] == []
+
+
 def test_process_start_ts_mismatch_404(fake_table):
     fake_table(FakeProc())
     assert Snapshotter().process_detail(50, 101) is None
@@ -231,14 +273,15 @@ def test_ports_listening_only_dedup_cap(fake_table):
              Conn(T, psutil.CONN_LISTEN, Addr("127.0.0.1", 8080)),  # dup
              Conn(T, psutil.CONN_ESTABLISHED, Addr("127.0.0.1", 5000)),
              Conn(U, psutil.CONN_NONE, Addr("0.0.0.0", 53)),
-             Conn(U, psutil.CONN_NONE, ())]  # unbound udp
+             Conn(U, psutil.CONN_NONE, ()),  # unbound udp
+             Conn(U, psutil.CONN_NONE, Addr("0.0.0.0", 0))]  # macOS unbound udp
     conns += [Conn(T, psutil.CONN_LISTEN, Addr("::", 10000 + i)) for i in range(60)]
     fake_table(FakeProc(conns=conns))
     ports = Snapshotter().process_detail(50, 100)["ports"]
     assert len(ports) == 50
     assert ports[:2] == [{"port": 53, "proto": "udp", "addr": "0.0.0.0"},
                          {"port": 8080, "proto": "tcp", "addr": "127.0.0.1"}]
-    assert all(p["port"] != 5000 for p in ports)
+    assert all(p["port"] not in (0, 5000) for p in ports)
 
 
 def test_take_concurrent():

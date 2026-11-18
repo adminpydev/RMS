@@ -15,6 +15,7 @@ _SKIP = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess)
 _ATTRS = ["pid", "ppid", "name", "exe", "username", "memory_info", "num_threads", "status",
           "create_time"]
 _EXTRAS_TTL = 5
+_TABLE_TTL = 5  # process_detail reuses the last take()'s table if younger than this
 _MAX_PORTS = 50
 
 
@@ -60,7 +61,7 @@ def _cmdline(proc):
 def _ports(conns):
     seen = set()
     for c in conns:
-        if not c.laddr:
+        if not c.laddr or not c.laddr.port:  # macOS unbound udp: ('0.0.0.0', 0)
             continue
         if c.type == socket.SOCK_STREAM and c.status == psutil.CONN_LISTEN:
             seen.add((c.laddr.port, "tcp", c.laddr.ip))
@@ -77,7 +78,10 @@ class Snapshotter:
         self._lock = threading.Lock()
         self._cache = {}  # (pid, start_ts) -> {"proc": psutil.Process, "cmdline": str|None}
         self._extras, self._extras_at = (None, None), None
+        self._table, self._table_at = {}, None  # last take(): pid -> (ppid, start_ts, name)
 
+    # ponytail: runs sysctl + vm_stat under the take lock; if they hang, polls stall up to
+    # 2x2 s every 5 s. Upgrade: refresh outside the lock and swap the result in.
     def _mac_extras(self):
         now = self.clock()
         if self._extras_at is None or now - self._extras_at >= _EXTRAS_TTL:
@@ -109,7 +113,7 @@ class Snapshotter:
                 try:
                     info = p.info
                     mem, ct = info["memory_info"], info["create_time"]
-                    if mem is None or ct is None:
+                    if ct is None:  # can't key it
                         continue
                     app = app_name(info["name"], info["exe"], self.platform)
                     if not app:
@@ -124,18 +128,21 @@ class Snapshotter:
                     cpu = None
                 else:
                     pct = _read(lambda: entry["proc"].cpu_percent(None))
-                    cpu = None if pct is None else int(pct * 10)
+                    cpu = None if pct is None else round(pct * 10)
                 live[key] = entry
-                rss = mem.rss
+                rss = None if mem is None else mem.rss  # denied (other users): row with nulls
                 rows.append({"pid": key[0], "ppid": info["ppid"], "start_ts": key[1],
                              "name": info["name"] or app, "app": app, "user": info["username"],
                              "cmdline": entry["cmdline"], "rss": rss,
-                             "share": round(rss / total, 4), "cpu": cpu,
+                             "share": None if rss is None else round(rss / total, 4), "cpu": cpu,
                              "threads": info["num_threads"], "status": info["status"]})
                 a = apps.setdefault(app, [0, 0])
-                a[0] += rss
+                a[0] += rss or 0
                 a[1] += 1
             self._cache = live
+            self._table = {r["pid"]: (r["ppid"], r["start_ts"], r["name"]) for r in rows}
+            self._table_at = self.clock()
+        rows.sort(key=lambda r: (r["rss"] is None, -(r["rss"] or 0)))
         app_rows = [{"app": k, "rss": r, "share": round(r / total, 4), "procs": n}
                     for k, (r, n) in apps.items()]
         app_rows.sort(key=lambda a: a["rss"], reverse=True)
@@ -143,6 +150,8 @@ class Snapshotter:
                 "apps": app_rows, "processes": rows}
 
     def process_detail(self, pid, start_ts):
+        if pid < 0:
+            return None  # psutil.Process(-1) raises ValueError
         with self._lock:
             try:
                 return self._detail(pid, start_ts)
@@ -175,11 +184,13 @@ class Snapshotter:
                "cpu_user": getattr(cpu, "user", None), "cpu_system": getattr(cpu, "system", None),
                "threads": r(p.num_threads), "open_files": r(lambda: len(p.open_files())),
                "ports": r(lambda: _ports(p.net_connections(kind="inet")))}
-        table = {}
-        for q in psutil.process_iter(["pid", "ppid", "name", "create_time"]):
-            i = _read(lambda: q.info)
-            if i and i["create_time"] is not None:
-                table[i["pid"]] = (i["ppid"], int(i["create_time"]), i["name"])
+        table = self._table
+        if self._table_at is None or self.clock() - self._table_at >= _TABLE_TTL:
+            table = {}
+            for q in psutil.process_iter(["pid", "ppid", "name", "create_time"]):
+                i = _read(lambda: q.info)
+                if i and i["create_time"] is not None:
+                    table[i["pid"]] = (i["ppid"], int(i["create_time"]), i["name"])
         par = table.get(out["ppid"])
         out["parent"] = ({"pid": out["ppid"], "start_ts": par[1], "name": par[2]}
                          if par and out["ppid"] != pid and par[1] <= start_ts else None)

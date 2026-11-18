@@ -68,6 +68,7 @@ def test_live(env):
     assert "breakdown" in d["system"]
     row = next(p for p in d["processes"] if p["pid"] == os.getpid())
     assert {"share", "status", "cpu"} <= set(row)
+    assert d["apps"] and all({"app", "rss", "share", "procs"} <= set(x) for x in d["apps"])
     assert not {"growth", "spark", "resolution"} & (set(d) | set(row))
     assert req(env, "/api/live?fast=1")[0].status == 200  # ignored
 
@@ -156,12 +157,3 @@ def test_static_nul_404(env):
 def test_static_js_content_type(env):
     r, _ = req(env, "/app.js")
     assert r.getheader("Content-Type").startswith("text/javascript")
-
-
-def test_no_background_threads(env):
-    req(env, "/api/live")
-    names = {t.name for t in threading.enumerate()}
-    assert not [n for n in names if "collect" in n.lower() or "sampl" in n.lower()]
-    extra = [t for t in threading.enumerate()
-             if t is not threading.main_thread() and t is not env.thread and not t.daemon]
-    assert extra == []

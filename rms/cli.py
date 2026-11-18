@@ -32,11 +32,11 @@ def _run(a):
         else:
             print(f"Cannot start server: {e}", file=sys.stderr)
         return 2
+    signal.signal(signal.SIGTERM, _interrupt)  # stop like Ctrl+C (kill, launchd, systemd)
     url = f"http://127.0.0.1:{a.port}"
     print(f"RMS running at {url}  (Ctrl+C to stop)")
     if not a.no_browser:
         webbrowser.open(url)
-    signal.signal(signal.SIGTERM, _interrupt)  # stop like Ctrl+C (kill, launchd, systemd)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

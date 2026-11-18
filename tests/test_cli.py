@@ -3,12 +3,15 @@ import os
 import signal
 import socket
 import subprocess
+import signal as _signal
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
 
 import pytest
+from http.server import ThreadingHTTPServer
 
 import rms.cli as cli
 from rms.cli import main
@@ -112,3 +115,16 @@ def test_run_sigterm_exits_cleanly(tmp_path):
             p.kill()
             p.communicate()
     assert p.returncode == 0, err
+
+
+def test_no_background_threads(monkeypatch):
+    baseline = set(threading.enumerate())
+    seen = []
+    monkeypatch.setattr(ThreadingHTTPServer, "serve_forever",
+                        lambda self, *a, **k: seen.append(set(threading.enumerate())))
+    old = _signal.getsignal(_signal.SIGTERM)
+    try:
+        assert main(["run", "--no-browser", "--port", str(_free_port())]) == 0
+    finally:
+        _signal.signal(_signal.SIGTERM, old)
+    assert seen == [baseline]

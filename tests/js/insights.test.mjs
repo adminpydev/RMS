@@ -2,97 +2,93 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { insights } from "../../rms/web/insights.js";
 
-const MB = 2 ** 20, GB = 2 ** 30, NOW = 1800000000;
-const sys = (o = {}) => ({ total: 16 * GB, used: 8 * GB, available: 8 * GB, swap_used: 0,
-                           swap_used_10m_ago: 0, pressure: 1, ...o });
-const proc = (o) => ({ pid: 100, ppid: 1, start_ts: NOW - 86400, name: "x", app: "X",
-                       user: "u", cmdline: "x", rss: 100 * MB, cpu: 0, threads: 1, growth_5m: 0,
-                       growth_30m: 0, trend: null, spark: null, ...o });
-const live = (procs = [proc({})], s = {}) => ({ ts: NOW, resolution: 10, simulated: false,
-                                               system: sys(s), processes: procs });
-const steady = (o) => proc({ growth_30m: 420 * MB, trend: { r2: 0.95 }, ...o });
+const MB = 2 ** 20, GB = 2 ** 30, T = 16 * GB;
+const sys = (o = {}) => ({ total: T, used: 8 * GB, available: 8 * GB, swap_total: 2 * GB, swap_used: 0,
+                           pressure: 1, ...o });
+const proc = (o) => ({ pid: 100, ppid: 1, start_ts: 1700000000, name: "x", app: "X", user: "u",
+                       cmdline: "x", rss: 100 * MB, share: 0.0061, cpu: 0, threads: 1, status: "running", ...o });
+const app = (o) => ({ app: "X", rss: 100 * MB, share: 0.0061, procs: 1, ...o });
+const live = (processes = [proc({})], apps = [app({})], s = {}) =>
+  ({ ts: 1700000000, simulated: false, system: sys(s), apps, processes });
+const kinds = (r) => r.map((i) => i.kind);
 
-test("calm input -> []; empty buffer -> []", () => {
-  assert.deepEqual(insights({ live: live(), now: NOW }), []);
-  assert.deepEqual(insights({ live: null, now: NOW }), []);
-  assert.deepEqual(insights({ live: { ts: null, resolution: null, simulated: false, system: null, processes: [] } }), []);
+test("calm -> []; null system or no processes -> []", () => {
+  assert.deepEqual(insights({ live: live() }), []);
+  assert.deepEqual(insights({ live: null }), []);
+  assert.deepEqual(insights({ live: { ...live(), system: null } }), []);
+  assert.deepEqual(insights({ live: live([], [], { pressure: 4 }) }), []);
 });
 
-test("fast grower", () => {
-  const r = insights({ live: live([proc({ name: "Slack", pid: 812, growth_5m: 340 * MB })]), now: NOW });
-  assert.equal(r.length, 1);
-  assert.equal(r[0].severity, "warn");
-  assert.equal(r[0].text, "Slack (PID 812) grew 340 MB in the last 5 min.");
-  assert.deepEqual([r[0].pid, r[0].start_ts, r[0].app], [812, NOW - 86400, "X"]);
-  assert.equal(insights({ live: live([proc({ growth_5m: 250 * MB })]), now: NOW }).length, 0);
+test("pressure: level >= 2 or used/total > 0.90, with top 3 apps", () => {
+  const apps = [app({ app: "Slack", rss: 1.2 * GB }), app({ app: "Chrome", rss: 3.1 * GB }),
+                app({ app: "Docker", rss: 2.4 * GB }), app({ app: "Tiny", rss: 5 * MB })];
+  const r = insights({ live: live([proc({})], apps, { pressure: 2 }) });
+  assert.deepEqual(r, [{ kind: "pressure", severity: "warn",
+    text: "Memory pressure is high. Top apps: Chrome 3.1 GB, Docker 2.4 GB, Slack 1.2 GB." }]);
+  assert.deepEqual(kinds(insights({ live: live([proc({})], apps, { used: 0.91 * T }) })), ["pressure"]);
+  assert.deepEqual(insights({ live: live([proc({})], apps, { used: 0.9 * T }) }), []);
+  assert.equal(insights({ live: live([proc({})], [], { pressure: 3 }) })[0].text, "Memory pressure is high.");
 });
 
-test("steady growth", () => {
-  const r = insights({ live: live([steady({ name: "Notion Helper", pid: 2231 })]), now: NOW });
-  assert.equal(r.length, 1);
-  assert.equal(r[0].severity, "warn");
-  assert.equal(r[0].text, "Notion Helper (PID 2231) grew steadily: +420 MB in 30 min.");
-  assert.deepEqual([r[0].pid, r[0].start_ts, r[0].app], [2231, NOW - 86400, "X"]);
-  assert.equal(insights({ live: live([steady({ growth_30m: 1.5 * GB })]) })[0].text,
-               "x (PID 100) grew steadily: +1.5 GB in 30 min.");
-  assert.deepEqual(insights({ live: live([steady({ growth_30m: 200 * MB })]) }), []);
-  assert.deepEqual(insights({ live: live([steady({ trend: { r2: 0.8 } })]) }), []);
+test("swap > 1 GiB", () => {
+  assert.deepEqual(insights({ live: live([proc({})], [app({})], { swap_used: 2.3 * GB }) }),
+    [{ kind: "swap", severity: "warn", text: "Swap in use: 2.3 GB. RAM is likely short." }]);
+  assert.deepEqual(insights({ live: live([proc({})], [app({})], { swap_used: GB }) }), []);
+  assert.equal(insights({ live: live([proc({})], [app({})], { swap_used: GB + 1 }) })[0].text,
+    "Swap in use: 1.0 GB. RAM is likely short.");
 });
 
-test("steady silent when trend null", () => {
-  assert.deepEqual(insights({ live: live([steady({ trend: null })]), now: NOW }), []);
-  assert.deepEqual(insights({ live: live([steady({ growth_30m: null, trend: null })]), now: NOW }), []);
+test("bigproc: share > 0.20, share desc, carries pid/start_ts/app", () => {
+  const a = proc({ pid: 1288, name: "qemu-system-aarch64", app: "Docker", rss: 3.7 * GB, share: 0.2313 });
+  const b = proc({ pid: 7, name: "big", app: "B", rss: 3.9 * GB, share: 0.2438 });
+  const r = insights({ live: live([a, proc({ share: 0.2 }), b], [app({})]) });
+  assert.deepEqual(kinds(r), ["bigproc", "bigproc"]);
+  assert.equal(r[1].text, "qemu-system-aarch64 (PID 1288) is using 23.1% of RAM (3.7 GB).");
+  assert.deepEqual([r[1].severity, r[1].pid, r[1].start_ts, r[1].app], ["warn", 1288, 1700000000, "Docker"]);
+  assert.equal(r[0].pid, 7);
 });
 
-test("one insight per process: fast beats steady", () => {
-  const r = insights({ live: live([steady({ pid: 5, growth_5m: 300 * MB })]), now: NOW });
-  assert.equal(r.length, 1);
-  assert.match(r[0].text, /in the last 5 min\.$/);
+test("bigapp: share > 0.30, skipped when the app already has bigproc", () => {
+  const chrome = app({ app: "Google Chrome", rss: 5.6 * GB, share: 0.348, procs: 27 });
+  const r = insights({ live: live([proc({})], [chrome, app({ share: 0.3 })]) });
+  assert.deepEqual(r, [{ kind: "bigapp", severity: "info", app: "Google Chrome",
+    text: "Google Chrome is using 34.8% of RAM across 27 processes." }]);
+  const big = proc({ app: "Google Chrome", share: 0.25, rss: 4 * GB });
+  assert.deepEqual(kinds(insights({ live: live([big], [chrome]) })), ["bigproc"]);
 });
 
-test("memory pressure lists top apps", () => {
-  const procs = [proc({ app: "Chrome", rss: 2 * GB }), proc({ app: "Chrome", rss: 1.1 * GB }),
-                 proc({ app: "Docker", rss: 2.4 * GB }), proc({ app: "Slack", rss: 1.2 * GB }),
-                 proc({ app: "Tiny", rss: MB })];
-  const r = insights({ live: live(procs, { pressure: 2 }), now: NOW });
-  assert.equal(r[0].text, "Memory pressure is high. Top users: Chrome 3.1 GB, Docker 2.4 GB, Slack 1.2 GB.");
-  assert.equal(r[0].pid, undefined);
-  assert.equal(insights({ live: live(procs, { used: 15 * GB }), now: NOW }).length, 1);
+test("manyprocs: procs > 30", () => {
+  const r = insights({ live: live([proc({})], [app({ app: "Google Chrome", procs: 42 }), app({ procs: 30 })]) });
+  assert.deepEqual(r, [{ kind: "manyprocs", severity: "info", app: "Google Chrome",
+    text: "Google Chrome is running 42 processes." }]);
 });
 
-test("big newcomer truncates long commands; skipped without a clock", () => {
-  const cmd = "node server.js --port 3000 --api-key *** --verbose --some-long-flag";
-  const r = insights({ live: live([proc({ pid: 9021, start_ts: NOW - 300, rss: 900 * MB, cmdline: cmd })]), now: NOW });
-  assert.equal(r.length, 1);
-  assert.equal(r[0].severity, "info");
-  assert.equal(r[0].text, "New process `node server.js --port 3000 --api-key…` (PID 9021) is using 900 MB.");
-  assert.equal(r[0].pid, 9021);
-  const anon = insights({ live: live([proc({ start_ts: NOW, rss: 900 * MB, cmdline: null, name: null })]), now: NOW });
-  assert.match(anon[0].text, /^New process `\?`/);
-  const long = insights({ live: live([proc({ start_ts: NOW, rss: 900 * MB, cmdline: "x".repeat(60) })]), now: NOW });
-  assert.ok(long[0].text.includes("x".repeat(39) + "…`"));
-  assert.deepEqual(insights({ live: live([proc({ start_ts: NOW - 700, rss: 900 * MB })]), now: NOW }), []);
-  // `now` defaults to live.ts; with neither, time rules are skipped
-  assert.equal(insights({ live: live([proc({ start_ts: NOW - 300, rss: 900 * MB })]) }).length, 1);
-  const noTs = { ...live([proc({ start_ts: NOW - 300, rss: 900 * MB })]), ts: null };
-  assert.deepEqual(insights({ live: noTs }), []);
+test("zombie: count, singular and plural", () => {
+  const z = (pid) => proc({ pid, status: "zombie", rss: null, share: null, cpu: null });
+  assert.deepEqual(insights({ live: live([proc({}), z(1), z(2), z(3)]) }),
+    [{ kind: "zombie", severity: "info", text: "3 zombie processes (finished but not cleaned up by their parent)." }]);
+  assert.equal(insights({ live: live([z(1)]) })[0].text,
+    "1 zombie process (finished but not cleaned up by their parent).");
 });
 
-test("swap growth, silent while swap_used_10m_ago is null", () => {
-  const r = insights({ live: live(undefined, { swap_used: 1.2 * GB, swap_used_10m_ago: 0 }), now: NOW });
-  assert.equal(r[0].text, "Swap grew 1.2 GB in 10 min. The system is short on RAM.");
-  assert.deepEqual(insights({ live: live(undefined, { swap_used: 5 * GB, swap_used_10m_ago: null }), now: NOW }), []);
+test("order and cap 4", () => {
+  const procs = [proc({ pid: 1, status: "zombie" }), proc({ pid: 2, app: "P", share: 0.21, rss: 3.4 * GB }),
+                 proc({ pid: 3, app: "Q", share: 0.22, rss: 3.5 * GB })];
+  const apps = [app({ app: "M", procs: 40 }), app({ app: "A", share: 0.31, rss: 5 * GB })];
+  const r = insights({ live: live(procs, apps, { pressure: 2, swap_used: 2 * GB }) });
+  assert.deepEqual(kinds(r), ["pressure", "swap", "bigproc", "bigproc"]);
+  assert.deepEqual(kinds(insights({ live: live(procs, apps) })), ["bigproc", "bigproc", "bigapp", "manyprocs"]);
+  assert.deepEqual(kinds(insights({ live: live([procs[0]], apps) })), ["bigapp", "manyprocs", "zombie"]);
 });
 
-test("order: pressure, swap, fast (desc), steady (desc), newcomer (rss desc); cap 4", () => {
-  const procs = [proc({ pid: 1, start_ts: NOW - 10, rss: 600 * MB }), proc({ pid: 2, start_ts: NOW - 10, rss: 900 * MB }),
-                 steady({ pid: 3, growth_30m: 300 * MB }), steady({ pid: 4, growth_30m: 500 * MB }),
-                 proc({ pid: 5, growth_5m: 260 * MB }), proc({ pid: 6, growth_5m: 400 * MB })];
-  const all = insights({ live: live(procs), now: NOW });
-  assert.equal(all.length, 4);
-  assert.deepEqual(all.map((i) => i.pid), [6, 5, 4, 3]);
-  const few = insights({ live: live([procs[0], procs[1], procs[2]], { pressure: 2, swap_used: GB }), now: NOW });
-  assert.deepEqual(few.map((i) => i.pid ?? i.text.slice(0, 4)), ["Memo", "Swap", 3, 2]);
-  assert.deepEqual(few.map((i) => i.kind), ["pressure", "swap", "steady", "new"]);
-  assert.deepEqual(all.map((i) => i.kind), ["fast", "fast", "steady", "steady"]);
+test("null rss/cpu/share are safe", () => {
+  const n = proc({ rss: null, share: null, cpu: null });
+  assert.deepEqual(insights({ live: live([n, proc({ cpu: null })], [app({ rss: 0, share: 0 })]) }), []);
+});
+
+test("long names are clipped at a space", () => {
+  const name = "a ".repeat(30) + "end";
+  const r = insights({ live: live([proc({ name, share: 0.25, rss: 4 * GB })], [app({})]) });
+  assert.ok(r[0].text.startsWith("a a"));
+  assert.ok(r[0].text.includes("… (PID 100)"));
 });

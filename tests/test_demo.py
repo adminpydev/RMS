@@ -87,6 +87,8 @@ def test_breakdown_sums_to_total():
         sy = s["system"]
         assert set(sy["breakdown"]) == {"wired", "active", "inactive", "compressed", "free"}
         assert sum(sy["breakdown"].values()) == TOTAL and min(sy["breakdown"].values()) >= 0
+        b = sy["breakdown"]
+        assert sy["used"] == b["wired"] + b["active"] + b["compressed"]
         assert sy["used"] + sy["available"] <= TOTAL and sy["swap_used"] <= sy["swap_total"]
 
 

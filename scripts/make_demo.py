@@ -17,7 +17,7 @@ from rms.snapshot import app_name
 
 MIB, GIB = 2**20, 2**30
 TOTAL = 16 * GIB
-T1 = 1763452800  # S1 ts; later moments follow at 1 h steps
+T1 = 1794988800  # 2026-11-18 00:00 UTC, S1 ts; later moments follow at 1 h steps
 BOOT = T1 - 3 * 86400
 
 CH = "/Applications/Google Chrome.app/Contents"
@@ -25,7 +25,7 @@ CHH = CH + "/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome 
 RND = " --type=renderer --lang=en-US --renderer-client-id="
 
 
-def _app(base, helper=None):  # Electron-style app: (exe, cmdline-prefix)
+def _app(base, helper=None):  # path of an app bundle's main binary, or of one of its helpers
     if helper is None:
         return f"/Applications/{base}.app/Contents/MacOS/{base}"
     return (f"/Applications/{base}.app/Contents/Frameworks/{helper}.app/Contents/MacOS/{helper}")
@@ -38,7 +38,7 @@ def _chrome_renderer(pid, ppid, mib, cid):
 
 
 # pid, ppid, name, user, exe, cmdline, MiB, cpu range (percent x 10), threads, flags
-# flags: "d" = memory denied (rss/cpu/threads null), "p" = has listening ports
+# flags: "d" = memory denied (rss/cpu/threads null), "z" = zombie
 PROCS = [
     (0, 0, "kernel_task", "root", None, None, 450, (20, 120), 240, ""),
     (1, 0, "launchd", "root", "/sbin/launchd", "/sbin/launchd", 20, (0, 10), 4, ""),
@@ -105,7 +105,7 @@ PROCS = [
     (1288, 1219, "qemu-system-aarch64", "demo", "/Applications/Docker.app/Contents/MacOS/"
      "qemu-system-aarch64", "/Applications/Docker.app/Contents/MacOS/qemu-system-aarch64 "
      "-accel hvf -cpu host -machine virt,highmem=on -m 8092 -smp 4", 2400, (60, 200), 14, ""),
-    (1984, 1, "Spotify", "demo", _app("Spotify"), _app("Spotify"), 300, (10, 60), 40, "p"),
+    (1984, 1, "Spotify", "demo", _app("Spotify"), _app("Spotify"), 300, (10, 60), 40, ""),
     (1990, 1984, "Spotify Helper (Renderer)", "demo", _app("Spotify", "Spotify Helper (Renderer)"),
      _app("Spotify", "Spotify Helper (Renderer)") + RND + "4", 180, (10, 80), 16, ""),
     (2207, 1, "Mail", "demo", "/System/Applications/Mail.app/Contents/MacOS/Mail",
@@ -154,7 +154,7 @@ PROCS = [
     (6620, 1, "zoom.us", "demo", _app("zoom.us"), _app("zoom.us"), 450, (60, 300), 50, ""),
     (11842, 4425, "node", "demo", "/opt/homebrew/bin/node",
      "node server.js --port 3000 --api-key sk-demo" + "0123456789abcdefghijklmn",  # fake; redacted
-     300, (5, 80), 11, "p"),
+     300, (5, 80), 11, ""),
     (14207, 4425, "python3", "demo", "/opt/homebrew/bin/python3",
      "/opt/homebrew/bin/python3 train.py --epochs 20 --batch-size 64", 620, (300, 900), 9, ""),
 ]
@@ -182,7 +182,7 @@ def _snapshot(rng, k, sysv, over, extra):
         v * MIB if i < 6 else v for i, v in enumerate(sysv))
     b = {"wired": wired, "active": active, "inactive": inactive, "compressed": compressed}
     b["free"] = TOTAL - sum(b.values())
-    system = {"total": TOTAL, "used": wired + active, "available": inactive + b["free"],
+    system = {"total": TOTAL, "used": wired + active + compressed, "available": inactive + b["free"],
               "swap_total": swap_total, "swap_used": swap_used, "pressure": pressure,
               "breakdown": b}
     rows, meta = [], {}

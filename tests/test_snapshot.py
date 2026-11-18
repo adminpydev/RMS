@@ -65,6 +65,14 @@ def env(monkeypatch):
     return state
 
 
+def _tick():  # fake clock that moves 10 s per read: every take() is a fresh scan
+    t = [0.0]
+    def clock():
+        t[0] += 10
+        return t[0]
+    return clock
+
+
 def test_take_shape():
     s = Snapshotter()
     out = s.take()
@@ -83,6 +91,8 @@ def test_breakdown_sums_to_total_macos(env):
     b = Snapshotter(platform="darwin").take()["system"]["breakdown"]
     assert b == {"wired": 100, "active": 300, "inactive": 200, "compressed": 150, "free": 250}
     assert sum(b.values()) == 1000
+    s = Snapshotter(platform="darwin").take()["system"]
+    assert s["used"] == 100 + 300 + 150  # wired + active + compressed, not psutil's 400
 
 
 def test_breakdown_macos_free_never_negative(env, monkeypatch):
@@ -106,10 +116,20 @@ def test_mac_extras_cached_5s(env, monkeypatch):
     calls, now = [], [0.0]
     monkeypatch.setattr(snapshot, "mac_extras", lambda: calls.append(1) or (1, 150))
     s = Snapshotter(platform="darwin", clock=lambda: now[0])
-    s.take(); now[0] = 4.9; s.take()
+    s._system(); now[0] = 4.9; s._system()
     assert len(calls) == 1
-    now[0] = 5.0; s.take()
+    now[0] = 5.0; s._system()
     assert len(calls) == 2
+
+
+def test_take_reuses_result_under_1s(env):
+    now = [0.0]
+    s = Snapshotter(platform="linux", clock=lambda: now[0])
+    first = s.take()
+    now[0] = 0.9
+    assert s.take() is first
+    now[0] = 1.0
+    assert s.take() is not first
 
 
 def test_apps_grouping_and_share(env):
@@ -124,14 +144,14 @@ def test_apps_grouping_and_share(env):
 
 def test_cpu_null_then_number(env):
     env["procs"] = [P(1, 10)]
-    s = Snapshotter(platform="linux")
+    s = Snapshotter(platform="linux", clock=_tick())
     assert s.take()["processes"][0]["cpu"] is None
     assert s.take()["processes"][0]["cpu"] == 123
 
 
 def test_cpu_rounded(env):
     env["procs"] = [P(1, 10, cpu=12.36)]
-    s = Snapshotter(platform="linux")
+    s = Snapshotter(platform="linux", clock=_tick())
     s.take()
     assert s.take()["processes"][0]["cpu"] == 124
 
@@ -151,7 +171,7 @@ def test_memory_denied_row_kept(env):
 def test_cache_pruned(env):
     a, b = P(1, 10), P(2, 10)
     env["procs"] = [a, b]
-    s = Snapshotter(platform="linux")
+    s = Snapshotter(platform="linux", clock=_tick())
     s.take()
     env["procs"] = [a]
     s.take()

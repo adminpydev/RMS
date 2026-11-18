@@ -9,12 +9,8 @@ let last = "";
 
 export function renderInsights(list, live) {
   const box = document.getElementById("insights");
-  let calm = null;
-  if (!live?.system) calm = "Collecting…";
-  else if (!list.length) {
-    calm = live.processes.some((p) => p.growth_5m != null) ? CALM : `${CALM} Growth checks start after 5 min of data.`;
-  }
-  const sig = calm ?? list.map((it) => `${it.kind}:${it.pid ?? ""}:${it.start_ts ?? ""}`).join("|");
+  const calm = !live?.system ? "Collecting…" : list.length ? null : CALM;
+  const sig = calm ?? list.map((it) => `${it.kind}:${it.pid ?? ""}:${it.start_ts ?? ""}:${it.app ?? ""}`).join("|");
   if (sig === last) {
     // same insights: refresh text in place (keeps DOM, focus, and the announcer quiet)
     box.querySelectorAll("li > :not(.sr)").forEach((el, i) => { if (list[i]) el.textContent = list[i].text; });

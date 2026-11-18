@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<title>RMS · RAM monitor</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>RMS</h1>
+      <span id="mode" class="badge" hidden></span>
+    </div>
+    <p class="host"><span id="host"></span> · <a class="repo" href="https://github.com/adminpydev/RMS">GitHub</a></p>
+  </header>
+
+  <p id="status" class="status" role="status">Loading…</p>
+
+  <main id="main" hidden>
+    <section id="system" class="panel system" aria-label="System memory"></section>
+
+    <section id="insights" class="insights" aria-label="Insights"></section>
+    <p id="insights-sr" class="sr" aria-live="polite"></p>
+
+    <section class="panel" aria-labelledby="apps-h">
+      <h2 id="apps-h">Apps</h2>
+      <div class="table-wrap apps-wrap">
+        <table class="apps" id="apps-table">
+          <thead><tr>
+            <th scope="col">App</th>
+            <th scope="col" class="num" title="RSS counts shared memory more than once">Memory</th>
+            <th scope="col" class="num">% of RAM</th>
+            <th scope="col" class="num">Processes</th>
+          </tr></thead>
+          <tbody id="apps-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">Select an app to see its processes. Memory is RSS, which counts shared memory more than once. Processes owned by other users show no memory.</p>
+    </section>
+
+    <section class="panel live" aria-labelledby="live-h">
+      <h2 id="live-h">Processes</h2>
+      <div class="live-bar">
+        <label class="search"><span class="sr">Search processes</span><input type="search" id="live-search" placeholder="Search name, command, app, PID or user" autocomplete="off"></label>
+        <button type="button" id="live-pause" class="btn" aria-pressed="false">Pause</button>
+        <p id="live-meta" class="live-meta" role="status"></p>
+      </div>
+      <div class="table-wrap live-wrap">
+        <table class="apps" id="live-table">
+          <thead></thead>
+          <tbody id="live-body"></tbody>
+        </table>
+      </div>
+      <p id="live-count" class="hint"></p>
+    </section>
+  </main>
+
+  <dialog id="proc" aria-labelledby="proc-title">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="proc-title">Process</h2>
+        <form method="dialog"><button type="submit" class="btn">Close</button></form>
+      </div>
+      <div id="proc-body"></div>
+    </div>
+  </dialog>
+</div>
+</body>
+</html>

@@ -42,11 +42,8 @@ jobs:
       - name: Assemble site
         run: |
           mkdir _site
-          cp -r site/* _site/
-          mkdir _site/demo
-          cp -r rms/web/* _site/demo/
-          cp site/sample.json _site/demo/sample.json
-          rm -f _site/sample.json
+          cp -r rms/web/* _site/
+          cp site/sample.json _site/sample.json
           touch _site/.nojekyll
       - name: Push to gh-pages
         working-directory: _site

@@ -73,11 +73,7 @@ h1 { margin: 0; font-size: 22px; letter-spacing: .08em; font-weight: 700; }
 .badge.live { color: var(--live); border-color: currentColor; }
 .host { margin: 0; color: var(--muted); font: 13px var(--mono); }
 
-.banner {
-  margin: 16px 0 0; padding: 10px 14px; border-radius: 6px;
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
-}
+.repo { color: inherit; }
 
 .status { margin: 16px 0 0; color: var(--muted); font-size: 13px; min-height: 1.5em; }
 

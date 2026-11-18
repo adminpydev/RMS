@@ -27,9 +27,9 @@ function setStatus(msg) {
 function renderHeader() {
   const badge = $("#mode");
   badge.hidden = false;
-  badge.textContent = meta.mode === "live" ? "Live" : "Demo";
-  badge.classList.toggle("live", meta.mode === "live");
-  $("#banner").hidden = meta.mode !== "demo";
+  // ponytail: demo and local look identical on purpose (user request); the host line names the machine
+  badge.textContent = "Live";
+  badge.classList.add("live");
   $("#host").textContent = `${meta.host} · ${OS[meta.os] ?? meta.os} · ${fmtBytes(meta.total_ram)} RAM`;
 }
 

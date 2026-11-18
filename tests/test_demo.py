@@ -6,183 +6,164 @@ from pathlib import Path
 from rms import __version__
 
 ROOT = Path(__file__).resolve().parent.parent
+SAMPLE = ROOT / "site" / "sample.json"
 spec = importlib.util.spec_from_file_location("make_demo", ROOT / "scripts" / "make_demo.py")
 make_demo = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(make_demo)
 
-MIB, GIB = 2**20, 2**30
-N, STEP = 2160, 10
-T0 = 14400
-I0 = T0 // STEP  # replay start index
-M = 60 // STEP  # samples per minute
+GIB = 2**30
+TOTAL = 16 * GIB
 D = make_demo.generate(42)
+SNAPS = D["snapshots"]
+
+LIVE_KEYS = {"ts", "simulated", "system", "apps", "processes", "details"}
+SYS_KEYS = {"total", "used", "available", "swap_total", "swap_used", "pressure", "breakdown"}
+ROW_KEYS = {"pid", "ppid", "start_ts", "name", "app", "user", "cmdline", "rss", "share", "cpu",
+            "threads", "status"}
+DETAIL_KEYS = {"pid", "ppid", "start_ts", "name", "app", "user", "cmdline", "exe", "cwd", "status",
+               "rss", "uss", "vms", "pfaults", "pageins", "cpu_user", "cpu_system", "threads",
+               "open_files", "ports", "parent", "children", "restricted"}
 
 
-def _by_name(name):
-    (p,) = [p for p in D["processes"].values() if p["name"] == name]
-    return p
+def insights(live):
+    """Spec section 7, in order, capped at 4. Returns [(kind, subject)]."""
+    s, procs, apps = live["system"], live["processes"], live["apps"]
+    out = []
+    if (s["pressure"] or 0) >= 2 or s["used"] / s["total"] > 0.90:
+        out.append(("pressure", None))
+    if s["swap_used"] > GIB:
+        out.append(("swap", None))
+    big = sorted((p for p in procs if p["share"] is not None and p["share"] > 0.20),
+                 key=lambda p: -p["share"])
+    out += [("bigproc", p["pid"]) for p in big]
+    big_apps = {p["app"] for p in big}
+    out += [("bigapp", a["app"]) for a in apps if a["share"] > 0.30 and a["app"] not in big_apps]
+    out += [("manyprocs", a["app"]) for a in apps if a["procs"] > 30]
+    if any(p["status"] == "zombie" for p in procs):
+        out.append(("zombie", None))
+    return out[:4]
 
 
-def _at(arr, t):
-    return arr[t // STEP]
+def _numbers(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == "share":
+                assert v is None or isinstance(v, float) and round(v, 4) == v
+            else:
+                yield from _numbers(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _numbers(v)
+    elif isinstance(o, (int, float)) and not isinstance(o, bool):
+        yield o
 
 
-# --- insight definitions (spec 5.4), evaluated on the raw 10 s samples at index i ---
-def _r2(points):
-    n = len(points)
-    if n < 20:
-        return None
-    mx = sum(x for x, _ in points) / n
-    my = sum(y for _, y in points) / n
-    sxx = sum((x - mx) ** 2 for x, _ in points)
-    sxy = sum((x - mx) * (y - my) for x, y in points)
-    sst = sum((y - my) ** 2 for _, y in points)
-    if not sst or not sxx:
-        return None
-    ssr = sum((y - my - sxy / sxx * (x - mx)) ** 2 for x, y in points)
-    return 1 - ssr / sst
-
-
-def _trend(rss, i):
-    """Last 1800 s, newest entry per 60 s bucket (aligned to now)."""
-    return _r2([(j * STEP, rss[j]) for j in range(i, i - 1800 // STEP - 1, -M)
-                if j >= 0 and rss[j] is not None])
-
-
-def _growth(rss, i, back):
-    # grid is exact, so the closest entry to now-back is the sample at i-back/STEP
-    j = i - back // STEP
-    return None if j < 0 or rss[i] is None or rss[j] is None else rss[i] - rss[j]
-
-
-def _insights(p, i):
-    rss, out = p["rss"], set()
-    if rss[i] is None:
-        return out
-    g5, g30 = _growth(rss, i, 300), _growth(rss, i, 1800)
-    if g5 is not None and g5 > 250 * MIB:
-        out.add("fast")
-    elif g30 is not None and g30 > 200 * MIB and (_trend(rss, i) or 0) > 0.8:
-        out.add("steady")
-    if p["start_ts"] >= i * STEP - 600 and rss[i] > 500 * MIB:
-        out.add("newcomer")
-    return out
-
-
-# --- shape ---
 def test_deterministic():
     assert make_demo.generate(42) == D
 
 
-def test_shape_aligned_ints():
-    m = D["meta"]
-    assert m == {"mode": "demo", "host": "demo-mac", "os": "darwin", "total_ram": 16 * GIB,
-                 "interval": 10, "first_ts": 0, "last_ts": 21590, "version": __version__,
-                 "relative": True, "t0": T0}
-    assert set(D) == {"meta", "system", "processes"}
-    s = D["system"]
-    assert set(s) == {"ts", "used", "available", "swap_used", "pressure"}
-    assert s["ts"] == list(range(0, 21600, 10))
-    assert all(len(v) == N and all(type(x) is int for x in v) for v in s.values())
-    for i in range(N):
-        assert s["available"][i] == 16 * GIB - s["used"][i] and 0 < s["used"][i] < 16 * GIB
-    ps = D["processes"]
-    assert 20 <= len(ps) <= 30 and set(ps) == {f"p{i}" for i in range(1, len(ps) + 1)}
-    keys = {"pid", "ppid", "name", "app", "user", "cmdline", "start_ts", "rss", "cpu", "threads"}
-    pids = {p["pid"] for p in ps.values()}
-    assert len(pids) == len(ps)
-    for p in ps.values():
-        assert set(p) == keys
-        cols = (p["rss"], p["cpu"], p["threads"])
-        assert all(len(c) == N for c in cols)
-        assert all((r is None) == (c is None) == (t is None) for r, c, t in zip(*cols))
-        assert all(type(v) is int for c in cols for v in c if v is not None)
-        first = next(i for i, v in enumerate(p["rss"]) if v is not None)
-        assert p["start_ts"] == s["ts"][first]
-        assert p["ppid"] in pids or p["pid"] in (0, 1)
-    by = {p["name"]: p for p in ps.values()}
-    assert by["kernel_task"]["pid"] == 0 and by["launchd"]["pid"] == 1
-    assert by["WindowServer"]["user"] == "_windowserver"
-    assert by["qemu-system-aarch64"]["ppid"] == by["com.docker.backend"]["pid"]
+def test_meta_and_shape():
+    assert D["meta"] == {"mode": "demo", "host": "demo-mac", "os": "darwin", "total_ram": TOTAL,
+                         "version": __version__}
+    assert set(D) == {"meta", "snapshots"} and len(SNAPS) == 5
+    for s in SNAPS:
+        assert set(s) == LIVE_KEYS and s["simulated"] is True and type(s["ts"]) is int
+        assert set(s["system"]) == SYS_KEYS and s["system"]["total"] == TOTAL
+        assert 50 <= len(s["processes"]) <= 90
+        assert all(set(p) == ROW_KEYS for p in s["processes"])
+        assert all(set(a) == {"app", "rss", "share", "procs"} for a in s["apps"])
+        keys = {f"{p['pid']}:{p['start_ts']}" for p in s["processes"]}
+        assert len(keys) == len(s["processes"]) and set(s["details"]) == keys
+        for k, d in s["details"].items():
+            assert set(d) == DETAIL_KEYS and k == f"{d['pid']}:{d['start_ts']}"
 
 
-def test_committed_file_matches():
-    with open(ROOT / "site" / "sample.json") as f:
-        assert json.load(f) == D
+def test_integers_only_except_share():
+    assert all(type(n) is int for n in _numbers(D))
 
 
-def test_committed_file_size():
-    assert (ROOT / "site" / "sample.json").stat().st_size <= 1.5e6
+def test_breakdown_sums_to_total():
+    for s in SNAPS:
+        sy = s["system"]
+        assert set(sy["breakdown"]) == {"wired", "active", "inactive", "compressed", "free"}
+        assert sum(sy["breakdown"].values()) == TOTAL and min(sy["breakdown"].values()) >= 0
+        assert sy["used"] + sy["available"] <= TOTAL and sy["swap_used"] <= sy["swap_total"]
 
 
-# --- planted events (spec 5.6, offsets from T0) ---
-def test_steady_grower():
-    rss = _by_name("Notion Helper (Renderer)")["rss"]
-    assert 450 * MIB <= _at(rss, T0 + 120) - _at(rss, T0 - 28 * 60) <= 550 * MIB
-    for t in (T0, T0 + 120):
-        assert _trend(rss, t // STEP) > 0.9
-    assert _insights(_by_name("Notion Helper (Renderer)"), I0) == {"steady"}
+def test_shares_and_apps_consistent():
+    for s in SNAPS:
+        procs = s["processes"]
+        assert procs == sorted(procs, key=lambda p: (p["rss"] is None, -(p["rss"] or 0)))
+        agg = {}
+        for p in procs:
+            assert p["share"] == (None if p["rss"] is None else round(p["rss"] / TOTAL, 4))
+            a = agg.setdefault(p["app"], [0, 0])
+            a[0] += p["rss"] or 0
+            a[1] += 1
+        assert {a["app"]: [a["rss"], a["procs"]] for a in s["apps"]} == agg
+        assert all(a["share"] == round(a["rss"] / TOTAL, 4) for a in s["apps"])
+        assert [a["rss"] for a in s["apps"]] == sorted((a["rss"] for a in s["apps"]), reverse=True)
 
 
-def test_fast_grower():
-    p = _by_name("Slack Helper (Renderer)")
-    assert 350 * MIB <= _at(p["rss"], T0 + 30) - _at(p["rss"], T0 - 270) <= 450 * MIB
-    assert _insights(p, I0) == {"fast"}
+def test_details_match_rows_and_tree():
+    for s in SNAPS:
+        rows = {p["pid"]: p for p in s["processes"]}
+        for p in s["processes"]:
+            d = s["details"][f"{p['pid']}:{p['start_ts']}"]
+            for f in ("ppid", "name", "app", "user", "cmdline", "rss", "threads", "status"):
+                assert d[f] == p[f], (p["pid"], f)
+            par = rows.get(p["ppid"])
+            if par and p["ppid"] != p["pid"]:
+                assert d["parent"] == {"pid": par["pid"], "start_ts": par["start_ts"],
+                                       "name": par["name"]}
+                assert par["start_ts"] <= p["start_ts"]
+            else:
+                assert d["parent"] is None
+            assert d["children"] == [{"pid": c["pid"], "start_ts": c["start_ts"], "name": c["name"]}
+                                     for c in sorted(rows.values(), key=lambda c: c["pid"])
+                                     if c["ppid"] == p["pid"] and c["pid"] != p["pid"]]
 
 
-def test_newcomer():
-    p = _by_name("python3")
-    assert p["start_ts"] == T0 + 60
-    assert all(v is None for v in p["rss"][:I0 + M])
-    assert all(v > 500 * MIB for v in p["rss"][I0 + M:])
-    assert _insights(p, I0 + M) == {"newcomer"}
+def test_trees_and_stable_identity():
+    s1 = {p["pid"]: p for p in SNAPS[0]["processes"]}
+    assert s1[0]["name"] == "kernel_task" and s1[1]["name"] == "launchd"
+    assert s1[1288]["app"] == "Docker" and s1[s1[1288]["ppid"]]["name"] == "com.docker.backend"
+    for s in SNAPS[1:]:
+        cur = {p["pid"]: p["start_ts"] for p in s["processes"]}
+        assert sum(cur.get(pid) == p["start_ts"] for pid, p in s1.items()) >= 0.9 * len(s1)
 
 
-def test_swap_growth():
-    sw = D["system"]["swap_used"]
-    assert 700 * MIB <= _at(sw, T0 + 30 * 60) - _at(sw, T0 + 20 * 60) <= 900 * MIB
+def test_restricted_and_denied_examples():
+    rows = [p for s in SNAPS for p in s["processes"]]
+    dets = [d for s in SNAPS for d in s["details"].values()]
+    root = [d for d in dets if d["user"] == "root" and d["restricted"]]
+    assert root and all(d[f] is None for d in root for f in ("uss", "cwd", "open_files", "ports"))
+    assert any(p["rss"] is None and p["share"] is None and p["status"] != "zombie" for p in rows)
+    assert any(p["cpu"] is None for p in rows)  # first sight / denied
+    assert any(d["ports"] for d in dets) and not any(d["restricted"] for d in dets
+                                                    if d["user"] == "demo"
+                                                    and d["status"] != "zombie")
 
 
-def _sys_insights(i):
-    s, out = D["system"], set()
-    if s["pressure"][i] >= 2 or s["used"][i] / (16 * GIB) > 0.90:
-        out.add("pressure")
-    if i >= 60 and s["swap_used"][i] - s["swap_used"][i - 60] > 500 * MIB:
-        out.add("swap")
-    return out
-
-
-def test_pressure_window_only():
-    p = D["system"]["pressure"]
-    hot = [i * STEP for i in range(N) if "pressure" in _sys_insights(i)]
-    assert hot and min(hot) >= T0 + 40 * 60 and max(hot) < T0 + 50 * 60
-    assert all(p[i] >= 2 for i in range((T0 + 40 * 60) // STEP, (T0 + 50 * 60) // STEP))
+def test_insights_per_snapshot():
+    got = [insights(s) for s in SNAPS]
+    assert got[0] == []
+    assert got[1] == [("bigproc", 1288)]
+    assert got[2] == [("bigapp", "Google Chrome"), ("manyprocs", "Google Chrome")]
+    assert got[3] == [("pressure", None), ("swap", None)]
+    assert got[4] == [("zombie", None)]
+    assert sum(p["status"] == "zombie" for p in SNAPS[4]["processes"]) == 2
 
 
 def test_no_unredacted_secrets():
     bad = re.compile(r"--api-key [^*]|sk-demo|password=[^*]|://[^*/]+:[^*/]+@")
-    cmds = [p["cmdline"] for p in D["processes"].values() if p["cmdline"]]
-    assert not [c for c in cmds if bad.search(c)]
-    assert any("--api-key ***" in c for c in cmds)
+    text = json.dumps(D)
+    assert not bad.search(text)
+    assert "--api-key ***" in text
     assert "sk-demo" in (ROOT / "scripts" / "make_demo.py").read_text()  # raw in source
 
 
-def test_quiet_otherwise():
-    """Over the replay range only the planted events fire (guards the JS insight tests)."""
-    allowed = {  # (name, kind): [lo, hi) sim ts
-        ("Notion Helper (Renderer)", "steady"): (T0, T0 + 30 * 60),
-        ("Slack Helper (Renderer)", "fast"): (T0, T0 + 5 * 60),
-        ("python3", "newcomer"): (T0 + 60, T0 + 60 + 601),
-        ("system", "swap"): (T0 + 20 * 60, T0 + 40 * 60),
-        ("system", "pressure"): (T0 + 40 * 60, T0 + 50 * 60),
-    }
-    seen, bad = set(), []
-    for i in range(I0, N):
-        t = i * STEP
-        fired = [("system", k) for k in _sys_insights(i)]
-        fired += [(p["name"], k) for p in D["processes"].values() for k in _insights(p, i)]
-        for f in fired:
-            lo, hi = allowed.get(f, (0, 0))
-            (seen.add(f) if lo <= t < hi else bad.append((t, f)))
-    assert not bad, bad[:5]
-    assert seen == set(allowed)
+def test_committed_file_matches_and_size():
+    with open(SAMPLE) as f:
+        assert json.load(f) == D
+    assert SAMPLE.stat().st_size <= 600_000

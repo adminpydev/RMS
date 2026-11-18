@@ -24,7 +24,7 @@ function render(p) {
   const cmd = p.cmdline
     ? `<pre class="cmd-full">${esc(p.cmdline)}</pre><p class="copy-row"><button type="button" class="btn" data-copy>Copy command</button> <span class="muted" role="status" data-copied>${esc(copied)}</span></p>`
     : `<p class="empty">Not available.</p>`;
-  return `${p.restricted ? `<p class="note">Limited details — macOS didn't allow reading some fields.</p>` : ""}
+  return `${p.restricted ? `<p class="note">Limited details — the system didn't allow reading some fields.</p>` : ""}
     ${facts([["App", val(p.app)], ["User", val(p.user)], ["Started", val(p.start_ts, fmtTime)], ["Status", statusCell(p.status)]])}
     ${section("Memory", [["RSS", fmtBytes(p.rss)], ["Unique", fmtBytes(p.uss)], ["Virtual", fmtBytes(p.vms)],
       ["Page faults", fmtNum(p.pfaults)], ["Page-ins", fmtNum(p.pageins)]])}

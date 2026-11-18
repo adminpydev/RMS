@@ -118,6 +118,14 @@ test("LiveSource calls the v0.4 endpoints; errors carry status", async () => {
   } finally { globalThis.fetch = orig; }
 });
 
+test("LiveSource keeps status when the error body is not JSON", async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 502, json: async () => { throw new SyntaxError("x"); } });
+  try {
+    await assert.rejects(new LiveSource().live(), (e) => e.status === 502 && /502/.test(e.message));
+  } finally { globalThis.fetch = orig; }
+});
+
 test("loadSource: localhost takes any 200 /api/meta as LiveSource; elsewhere demo", async () => {
   const orig = globalThis.fetch;
   globalThis.fetch = async (u) => (u === "/api/meta"

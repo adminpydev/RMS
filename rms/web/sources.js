@@ -62,7 +62,7 @@ export class LiveSource {
     for (const [k, v] of Object.entries(params)) if (v != null) q.set(k, v);
     const qs = String(q);
     const r = await fetch(qs ? `/api/${path}?${qs}` : `/api/${path}`);
-    const body = await r.json();
+    const body = await r.json().catch(() => ({}));
     if (!r.ok) throw Object.assign(new Error(body.error || `HTTP ${r.status}`), { status: r.status });
     return body;
   }

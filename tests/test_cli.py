@@ -34,14 +34,14 @@ def test_run_other_oserror(capsys, monkeypatch):
     assert "Cannot start server" in err and "in use" not in err
 
 
-@pytest.mark.parametrize("flag,val", [("--interval", "0"), ("--port", "-1"), ("--port", "70000")])
+@pytest.mark.parametrize("flag,val", [("--port", "-1"), ("--port", "70000")])
 def test_run_rejects_bad_numbers(flag, val):
     with pytest.raises(SystemExit) as e:
         main(["run", flag, val, "--no-browser"])
     assert e.value.code == 2
 
 
-@pytest.mark.parametrize("argv", [["export"], ["status"], ["run", "--db", "x.db"],
+@pytest.mark.parametrize("argv", [["export"], ["status"], ["run", "--db", "x.db"], ["run", "--interval", "5"],
                                   ["run", "--retention-days", "3"], []])
 def test_cli_rejects_removed(argv):
     with pytest.raises(SystemExit) as e:
@@ -66,7 +66,7 @@ def _spawn(home, port):
 
 
 def _get(port):
-    rq = urllib.request.Request(f"http://127.0.0.1:{port}/api/live?fast=1",
+    rq = urllib.request.Request(f"http://127.0.0.1:{port}/api/live",
                                 headers={"Host": f"127.0.0.1:{port}"})
     return urllib.request.urlopen(rq, timeout=2).status
 

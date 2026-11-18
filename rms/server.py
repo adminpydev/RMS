@@ -23,9 +23,9 @@ def _int(q, key):
     return int(v)
 
 
-def make_server(port, meta, web_dir, recent, sampler):
+def make_server(port, meta, web_dir, snap):
     web = Path(web_dir).resolve()
-    meta = {**meta, "mode": "live", "features": ["live"]}
+    meta = {**meta, "mode": "live", "features": ["now"]}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -65,14 +65,12 @@ def make_server(port, meta, web_dir, recent, sampler):
             if path == "/api/meta":
                 return self._json(200, meta)
             if path == "/api/live":
-                if q.get("fast", [None])[-1] == "1":
-                    sampler.poke()
-                return self._json(200, recent.snapshot())
+                return self._json(200, snap.take())
             if path == "/api/process":
                 pid, start_ts = _int(q, "pid"), _int(q, "start_ts")
                 if pid < 0 or start_ts < 0:
                     raise _Bad("pid and start_ts must be >= 0")
-                d = recent.process(pid, start_ts)
+                d = snap.process_detail(pid, start_ts)
                 if d is not None:
                     return self._json(200, d)
             self._json(404, {"error": "not found"})
